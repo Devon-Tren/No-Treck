@@ -1,1306 +1,1736 @@
+// File: src/app/intake/page.tsx
 'use client'
 
-import Link from 'next/link'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { useSearchParams } from 'next/navigation'
 
 /* ============================== Types ============================== */
-type Severity = 'mild' | 'moderate' | 'severe'
-type RiskLevel = 'low' | 'moderate' | 'escalate'
-type Topic = 'possible fracture' | 'minor cut' | 'sprain/strain' | 'burn' | 'fever' | 'rash' | 'generic'
+type Role = 'user' | 'assistant'
+type Risk = 'low' | 'moderate' | 'severe'
 
-type TriageForm = {
-  q: string
-  severity: Severity | ''
-  onset: '' | 'today' | '1-3d' | '4+d'
-  pain: number
-  bodyArea: '' | 'hand' | 'foot' | 'leg' | 'arm' | 'head' | 'torso' | 'other'
-  ageBand: '' | 'infant' | 'child' | 'adult' | 'older'
-  pregnant: boolean
-  conditions: string
-  zip: string
-  useLocation: boolean
-  insurance: string
-  // Red flags (fracture-aware)
-  redFlagDeformity: boolean
-  redFlagOpenWound: boolean
-  redFlagNumbness: boolean
-  redFlagCannotMove: boolean
-  redFlagSevereSwelling: boolean
+type Citation = { title: string; url: string; source?: string }
+type InsightCard = {
+  id: string
+  title: string
+  body: string
+  citations?: Citation[]
+  confidence?: 'low' | 'medium' | 'high'
+  urgency?: 'info' | 'elevated' | 'severe'
+  at?: number
+  why?: string[]
+  next?: string[]
 }
 
-type Citation = { id: string; label: string; org: string; tier: 'T1' | 'T2' | 'T3'; lastUpdated: string; href: string }
+type PlaceReview = {
+  quote?: string
+  source?: string
+  url: string
+  author?: string
+  rating?: number
+  date?: string
+}
 
-type CareOption = {
+type Place = {
+  id: string
   name: string
-  distance: string
-  wait: string | null
-  inNetwork: boolean | null
-  priceRange: string | null
-  open: boolean
-  lat?: number
-  lng?: number
-  typeGuess?: 'er' | 'urgent' | 'clinic'
+  address?: string
+  distance_km?: number
+  phone?: string
+  url?: string
+  maps?: string
+  image?: string
+  rating?: number
+  reviews?: number
+  price?: '$' | '$$' | '$$$' | '$$$$'
+  reason?: string
+  est_cost_min?: number
+  est_cost_max?: number
+  in_network?: boolean
+  network_confidence?: number
+  blurb?: string
+  reviewCite?: PlaceReview
+  score?: {
+    overall?: number
+    bedside?: number
+    cost?: number
+    wait?: number
+    distance?: number
+  }
+  scoreNotes?: string
+  scoreSources?: Citation[]
 }
 
-type Plan = {
-  risk: RiskLevel
-  topic: Topic
-  summary: string
-  selfCare: { text: string; citationId: string }[]
-  priceNote?: string
-  coverage?: { oopEstimate: string | null; assumptions: string[]; citationIds: string[] }
-  watchOuts: { text: string; citationId: string }[]
-  afterCare: { text: string; citationId: string }[]
-  citationsUsed: string[]
-  stale: boolean
+type RefImage = { url: string; source?: string; title?: string }
+
+type ChatResponse = {
+  text?: string
+  citations?: Citation[]
+  risk?: Risk
+  insights?: InsightCard[]
+  places?: Place[]
+  refImages?: RefImage[]
+  audit?: string
 }
 
-/* ============================== Citations (allowlist) ============================== */
-const CITATIONS: Citation[] = [
-  { id: 'cdc-wounds-2023', label: 'Wound care basics', org: 'CDC', tier: 'T1', lastUpdated: '2023-09-01', href: 'https://www.cdc.gov/' },
-  { id: 'nih-medlineplus-cuts-2024', label: 'Cuts and lacerations (patient education)', org: 'NIH / MedlinePlus', tier: 'T1', lastUpdated: '2024-02-15', href: 'https://medlineplus.gov/' },
-  { id: 'nice-laceration-2022', label: 'Laceration: assessment & management', org: 'NICE', tier: 'T1', lastUpdated: '2022-12-10', href: 'https://www.nice.org.uk/' },
-  { id: 'cochrane-irrigation-2021', label: 'Irrigation of acute wounds (review)', org: 'Cochrane', tier: 'T2', lastUpdated: '2021-11-01', href: 'https://www.cochranelibrary.com/' },
-  { id: 'nih-medlineplus-fractures-2024', label: 'Fractures (patient education)', org: 'NIH / MedlinePlus', tier: 'T1', lastUpdated: '2024-03-01', href: 'https://medlineplus.gov/' },
-  { id: 'nice-fracture-assessment-2023', label: 'Fracture: initial assessment', org: 'NICE', tier: 'T1', lastUpdated: '2023-05-10', href: 'https://www.nice.org.uk/' },
-  { id: 'nih-sprain-2024', label: 'Sprains and strains (R.I.C.E., return to activity)', org: 'NIH / MedlinePlus', tier: 'T1', lastUpdated: '2024-01-20', href: 'https://medlineplus.gov/' },
-  { id: 'nih-burns-2024', label: 'Minor burns (cooling, dressings, when to escalate)', org: 'NIH / MedlinePlus', tier: 'T1', lastUpdated: '2024-06-05', href: 'https://medlineplus.gov/' },
-  { id: 'who-fever-2023', label: 'Fever: patient guidance & red flags', org: 'WHO', tier: 'T1', lastUpdated: '2023-04-03', href: 'https://www.who.int/' },
+type ChatMessage = {
+  id: string
+  role: Role
+  text: string
+  citations?: Citation[]
+  attachments?: { kind: 'image'; name: string; preview?: string }[]
+  refImages?: RefImage[]
+}
+
+// NEW: lightweight follow-ups/tasks
+type Task = {
+  id: string
+  title: string
+  due?: string // ISO string
+  notes?: string
+  linkedPlaceId?: string
+  linkedInsightId?: string
+  done?: boolean
+  createdAt?: number
+}
+
+/* ============================== Config ============================== */
+// Match landing page gradient (from page.tsx)
+const BRAND_BLUE = '#0E5BD8' // primary accent
+
+const ALLOWED_DOMAINS = [
+  'nih.gov',
+  'medlineplus.gov',
+  'cdc.gov',
+  'who.int',
+  'nice.org.uk',
+  'mayoclinic.org',
+  'aafp.org',
+  'cochranelibrary.com',
 ]
 
-/* ============================== Quick suggestions ============================== */
-const SUGGESTIONS = [
-  'Cut my foot on glass',
-  'Twisted ankle yesterday',
-  'Burned my hand on pan',
-  'Fever since last night',
+// Recognize public review sources to pass the review firewall
+const REVIEW_SITES = [
+  'google.com',
+  'maps.google.com',
+  'yelp.com',
+  'healthgrades.com',
+  'vitals.com',
+  'zocdoc.com',
+  'ratemds.com',
+  'webmd.com',
+  'caredash.com',
+  'doctible.com',
 ]
 
-/* ============================== Helpers: topic/risk ============================== */
-function extractTopic(form: TriageForm): Topic {
-  const t = form.q.toLowerCase()
-  if (/(fractur|broke|broken|dislocat|bone|obvious deform)/.test(t)) return 'possible fracture'
-  if (/(cut|lacerat|bleed|glass|gash)/.test(t)) return 'minor cut'
-  if (/(sprain|twist|rolled|strain|pulled)/.test(t)) return 'sprain/strain'
-  if (/(burn|scald)/.test(t)) return 'burn'
-  if (/(fever|temperature|temp)/.test(t)) return 'fever'
-  if (/(rash|hives|itch|urticaria)/.test(t)) return 'rash'
-  // body-area hints
-  if (form.bodyArea && (form.bodyArea === 'hand' || form.bodyArea === 'foot')) return 'sprain/strain'
-  return 'generic'
+const CARD_STAGGER_MS = 160
+const CARD_DURATION_MS = 560
+
+// Diversified question bank with memory to avoid repetition
+const QUESTION_BANK: { key: string; text: string }[] = [
+  { key: 'onset', text: 'When did this start (exact day/time)? Has it been changing?' },
+  { key: 'provocation', text: 'What makes it better or worse (rest, activity, position)?' },
+  { key: 'quality', text: 'How would you describe it (aching, sharp, throbbing)? Any spreading or radiation?' },
+  { key: 'region', text: 'Where is it located exactly? Any redness, warmth, or swelling?' },
+  { key: 'severity', text: 'On a 0–10 scale, how severe is it right now, and what’s the worst it’s been?' },
+  { key: 'redflags', text: 'Any red flags: fever, shortness of breath, chest pain, weakness, confusion, or new numbness?' },
+  { key: 'function', text: 'What can you not do now that you could do before (walk, grip, turn head, etc.)?' },
+  { key: 'context', text: 'What happened just before this started (injury, new meds, illness, travel)?' },
+  { key: 'history', text: 'Any relevant history (conditions, surgeries, allergies) or meds you’re taking now?' },
+]
+
+// Legacy constant left intact; we now pick from QUESTION_BANK dynamically
+const OPQRST_QUESTIONS = QUESTION_BANK.map(q => q.text)
+
+const TRIAGE_SYSTEM_PROMPT = `
+You are "No Trek" ("Stella" in the UI). Provide educational triage support (not a diagnosis).
+Ask *one or two* high-yield questions at a time. Vary phrasing (OPQRST / SOCRATES / OLD CARTS) and avoid repeating questions already answered (especially severity 0–10). 
+Screen red flags quickly and escalate tone appropriately.
+Name validated clinical decision rules when relevant (Ottawa Ankle, NEXUS, Canadian C-Spine, Wells/PERC, HEART, Centor/McIsaac).
+Every non-question claim must include citations from: ${ALLOWED_DOMAINS.join(', ')}. If you cannot cite, ask for more info.
+
+Return JSON with:
+- text
+- citations: {title,url,source?}[]
+- risk: "low"|"moderate"|"severe"
+- insights: {id,title,body,why[],next[],confidence,urgency,citations[]}
+- places (optional, only if verified reviews available)
+- refImages (optional)
+`.trim()
+
+/* ============================== Utils ============================== */
+const uid = (p = 'm') => `${p}_${Math.random().toString(36).slice(2, 9)}`
+const cx = (...xs: Array<string | false | null | undefined>) => xs.filter(Boolean).join(' ')
+const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n))
+const domainOf = (url: string) => {
+  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' }
+}
+const isDeclarative = (t?: string) => {
+  if (!t) return false
+  const s = t.trim()
+  return s.length > 0 && (!s.endsWith('?') || /[.!] /.test(s))
+}
+const isReviewDomain = (url?: string) => {
+  if (!url) return false
+  const d = domainOf(url)
+  return REVIEW_SITES.some((rd) => d.endsWith(rd))
 }
 
-function computeRisk(form: TriageForm): RiskLevel {
-  const text = form.q.toLowerCase()
-  const fxIntent = /(broke|broken|fractur|dislocat)/.test(text)
-  const textFlags = /(obvious deform|bone|exposed|can.?t move|numb|tingl|crushing|severe swelling)/.test(text)
-  const checkedFlags =
-    form.redFlagDeformity ||
-    form.redFlagOpenWound ||
-    form.redFlagNumbness ||
-    form.redFlagCannotMove ||
-    form.redFlagSevereSwelling
-  const infantFever = text.includes('fever') && form.ageBand === 'infant'
-
-  if (fxIntent || textFlags || checkedFlags || form.severity === 'severe' || form.pain >= 8 || infantFever) return 'escalate'
-  if (form.severity === 'moderate' || form.pain >= 5) return 'moderate'
-  return 'low'
-}
-
-/* ============================== Venue helpers & content tailoring ============================== */
-type VenueType = 'urgent' | 'clinic' | 'er'
-function venueTypeFromNameOrTags(name?: string, tags?: Record<string, string>): VenueType {
-  const hint = `${name || ''} ${(tags?.healthcare || '')} ${(tags?.amenity || '')}`.toLowerCase()
-  if (/er|emerg|trauma|hospital/.test(hint)) return 'er'
-  if (/urgent/.test(hint)) return 'urgent'
-  return 'clinic'
-}
-function getExpectations(topic: Topic, v?: VenueType): string[] {
-  if (topic === 'possible fracture') {
-    return [
-      'Imaging (X-ray) to confirm fracture and alignment.',
-      'Immobilization (splint/cast) and pain control.',
-      ...(v === 'er' ? ['Ortho consult available if complex.'] : ['May refer to ER if fracture is complex.']),
-    ]
-  }
-  if (topic === 'minor cut') {
-    return [
-      'Irrigation/cleaning; evaluate if closure (adhesive/sutures) needed.',
-      'Tetanus update if indicated.',
-      'Infection prevention and what to watch for.',
-    ]
-  }
-  if (topic === 'sprain/strain') {
-    return [
-      'Focused exam; consider X-ray if Ottawa rules suggest.',
-      'R.I.C.E. + graded activity; brace or wrap if helpful.',
-      'Follow-up if not improving 48–72h.',
-    ]
-  }
-  if (topic === 'burn') {
-    return [
-      'Cool running water (no ice); non-adherent dressing.',
-      'Assess depth/size/location; refer if face/hands/genitals or large area.',
-      'Pain control and infection watch-outs.',
-    ]
-  }
-  if (topic === 'fever') {
-    return [
-      'Temp check method, hydration, antipyretics as indicated.',
-      'Age-specific thresholds; look for red flags.',
-      'When to escalate or test.',
-    ]
-  }
-  if (topic === 'rash') {
-    return [
-      'Pattern and distribution assessment.',
-      'Allergy/infection differentiation; symptomatic relief.',
-      'Escalate if systemic symptoms or mucosal involvement.',
-    ]
-  }
-  return [
-    'Focused exam and conservative care first.',
-    'Clear watch-outs and when to escalate.',
-    'Follow-up plan if not improving within 24–48h.',
-  ]
-}
-
-function bodyAreaAdjustments(topic: Topic, area: TriageForm['bodyArea']): { self?: string[]; watch?: string[] } {
-  const out: { self?: string[]; watch?: string[] } = {}
-  if (topic === 'minor cut' && area === 'foot') {
-    out.self = ['After cleaning, keep weight-bearing minimal until sealed. Change dressing if soaked.']
-    out.watch = ['Increasing redness, swelling, or pain when walking can indicate infection—seek care.']
-  }
-  if (topic === 'sprain/strain' && (area === 'foot' || area === 'leg')) {
-    out.self = ['R.I.C.E.: Rest, Ice (15–20 min on/off), Compression wrap, Elevation above heart.']
-  }
-  if (area === 'head' && topic !== 'fever' && topic !== 'rash') {
-    out.watch = ['Worsening headache, repeated vomiting, confusion, or unequal pupils → ER now.']
-  }
-  return out
-}
-
-/* ============================== Plan builder (tailored) ============================== */
-function buildPlan(form: TriageForm): Plan {
-  const topic = extractTopic(form)
-  const risk = topic === 'possible fracture' ? 'escalate' : computeRisk(form)
-
-  let summary = ''
-  let selfCare: { text: string; citationId: string }[] = []
-  let watchOuts: { text: string; citationId: string }[] = []
-  let afterCare: { text: string; citationId: string }[] = []
-
-  if (topic === 'possible fracture') {
-    summary = 'Possible fracture — needs in-person assessment and imaging.'
-    selfCare = [
-      { text: 'Immobilize with a rigid support or sling; avoid using the limb.', citationId: 'nice-fracture-assessment-2023' },
-      { text: 'Remove rings or tight items before swelling increases.', citationId: 'nih-medlineplus-fractures-2024' },
-      { text: 'Cold pack wrapped in cloth for 15–20 min; elevate.', citationId: 'nih-medlineplus-fractures-2024' },
-      { text: 'Do not attempt to realign the limb.', citationId: 'nice-fracture-assessment-2023' },
-    ]
-    watchOuts = [{ text: 'Blue/pale fingers, worsening numbness, or uncontrolled pain → ER now.', citationId: 'nice-fracture-assessment-2023' }]
-    afterCare = [{ text: 'Protect splint/cast from moisture; follow orthopedics if advised.', citationId: 'nih-medlineplus-fractures-2024' }]
-  } else if (topic === 'minor cut') {
-    summary = 'Likely minor laceration — safe to start home care now.'
-    selfCare = [
-      { text: 'Rinse under clean running water for 5 minutes; remove visible debris.', citationId: 'cdc-wounds-2023' },
-      { text: 'Apply gentle pressure with clean cloth to stop bleeding.', citationId: 'nih-medlineplus-cuts-2024' },
-      { text: 'Thin layer of petroleum-based ointment; cover with sterile dressing.', citationId: 'nice-laceration-2022' },
-    ]
-    watchOuts = [
-      { text: 'Numbness, deep gaping edges, or heavy bleeding that won’t stop → urgent care/ER.', citationId: 'nice-laceration-2022' },
-      { text: 'Red streaks, fever, or worsening pain/swelling after 24–48h → seek care.', citationId: 'cdc-wounds-2023' },
-    ]
-    afterCare = [
-      { text: 'Change the dressing daily or if soaked; keep clean and dry.', citationId: 'nih-medlineplus-cuts-2024' },
-      { text: 'Confirm tetanus status if unsure.', citationId: 'nice-laceration-2022' },
-    ]
-  } else if (topic === 'sprain/strain') {
-    summary = 'Likely sprain/strain — start R.I.C.E., monitor function, escalate if red flags.'
-    selfCare = [
-      { text: 'Rest and protect the area; avoid painful activity for 24–48h.', citationId: 'nih-sprain-2024' },
-      { text: 'Ice 15–20 min on/off; compression wrap; elevate above heart.', citationId: 'nih-sprain-2024' },
-    ]
-    watchOuts = [
-      { text: 'Inability to bear weight or severe instability → urgent care/ER.', citationId: 'nih-sprain-2024' },
-    ]
-    afterCare = [{ text: 'Gradual return to activity as pain allows; consider brace.', citationId: 'nih-sprain-2024' }]
-  } else if (topic === 'burn') {
-    summary = 'Minor burn — cool, cover, and watch for depth/size/location concerns.'
-    selfCare = [
-      { text: 'Cool running water (10–20 min). No ice.', citationId: 'nih-burns-2024' },
-      { text: 'Non-adherent dressing; avoid home remedies on the wound.', citationId: 'nih-burns-2024' },
-    ]
-    watchOuts = [
-      { text: 'Face/hands/genitals or large/deep burns → urgent care/ER.', citationId: 'nih-burns-2024' },
-    ]
-    afterCare = [{ text: 'Keep clean/dry; change dressing as directed; pain control as needed.', citationId: 'nih-burns-2024' }]
-  } else if (topic === 'fever') {
-    summary = 'Fever — hydration, antipyretics if indicated, look for red flags.'
-    selfCare = [
-      { text: 'Oral fluids regularly; rest.', citationId: 'who-fever-2023' },
-    ]
-    watchOuts = [
-      { text: 'Neck stiffness, confusion, chest pain, severe dehydration → urgent care/ER.', citationId: 'who-fever-2023' },
-    ]
-    afterCare = [{ text: 'Re-evaluate in 24–48h; seek care if worsening or persistent.', citationId: 'who-fever-2023' }]
-  } else if (topic === 'rash') {
-    summary = 'Rash — symptom relief; monitor pattern and systemic symptoms.'
-    selfCare = [{ text: 'Avoid triggers; cool compresses; OTC antihistamine if itchy.', citationId: 'who-fever-2023' }]
-    watchOuts = [{ text: 'Fever, blistering, mucosal involvement, or rapid spread → urgent care/ER.', citationId: 'who-fever-2023' }]
-    afterCare = [{ text: 'If not improving in 48–72h, seek care.', citationId: 'who-fever-2023' }]
-  } else {
-    summary = 'We can start with conservative self-care and monitor.'
-    selfCare = [
-      { text: 'Rest and protect the area; avoid activities that worsen pain.', citationId: 'nih-medlineplus-cuts-2024' },
-      { text: 'Over-the-counter pain relief per label if needed.', citationId: 'nice-laceration-2022' },
-    ]
-    watchOuts = [
-      { text: 'If symptoms rapidly worsen or red-flag signs appear, escalate to in-person care.', citationId: 'nih-medlineplus-cuts-2024' },
-    ]
-    afterCare = [{ text: 'Re-evaluate in 24–48h; if not improving, contact a clinician.', citationId: 'nih-medlineplus-cuts-2024' }]
-  }
-
-  // Body-area specific adjustments
-  const adj = bodyAreaAdjustments(topic, form.bodyArea)
-  if (adj.self) selfCare = [...selfCare, ...adj.self.map(text => ({ text, citationId: selfCare[0]?.citationId || 'nih-medlineplus-cuts-2024' }))]
-  if (adj.watch) watchOuts = [...watchOuts, ...adj.watch.map(text => ({ text, citationId: watchOuts[0]?.citationId || 'nih-medlineplus-cuts-2024' }))]
-
-  const coverage =
-    form.insurance.trim().length > 0
-      ? {
-          oopEstimate:
-            topic === 'possible fracture' || risk === 'escalate'
-              ? '$120–$280 (urgent care), $350+ (ER)'
-              : topic === 'minor cut'
-              ? '$85–$160 (clinic/urgent care)'
-              : '$85–$200 (clinic/urgent care)',
-          assumptions: [
-            'Based on typical cash rates or PPO in-network urgent care visit.',
-            'Does not include procedures (e.g., imaging, sutures) or tests.',
-          ],
-          citationIds: ['cochrane-irrigation-2021'],
-        }
-      : { oopEstimate: null, assumptions: ['Add your insurance to check in-network and estimate out-of-pocket.'], citationIds: [] }
-
-  const citationsUsed = Array.from(new Set([...selfCare, ...watchOuts, ...afterCare].map(s => s.citationId).concat(coverage.citationIds)))
-  const stale = CITATIONS.some(c => citationsUsed.includes(c.id) && parseInt(c.lastUpdated.slice(0, 4), 10) <= new Date().getFullYear() - 2)
-
-  return { risk, topic, summary, selfCare, coverage, priceNote: 'Estimate. We show the math.', watchOuts, afterCare, citationsUsed, stale }
-}
-
-/* ============================== Location + distance + download helpers ============================== */
-type Coords = { lat: number; lng: number } | null
-
-function useBrowserLocation(enabled: boolean) {
-  const [coords, setCoords] = useState<Coords>(null)
-  const [status, setStatus] = useState<'idle'|'prompt'|'granted'|'denied'|'error'>('idle')
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (!enabled) return
-    if (!('geolocation' in navigator)) {
-      setStatus('error'); setError('Geolocation not supported')
-      return
-    }
-    setStatus('prompt')
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setCoords({ lat: pos.coords.latitude, lng: pos.coords.longitude })
-        setStatus('granted')
-      },
-      (err) => {
-        setStatus(err.code === err.PERMISSION_DENIED ? 'denied' : 'error')
-        setError(err.message)
-      },
-      { enableHighAccuracy: true, timeout: 12000, maximumAge: 60000 }
-    )
-  }, [enabled])
-
-  return { coords, status, error }
-}
-
-function haversineMiles(a: Coords, b: Coords) {
-  if (!a || !b) return null
-  const R = 3958.8
-  const toRad = (d: number) => (d * Math.PI) / 180
-  const dLat = toRad(b.lat - a.lat)
-  const dLon = toRad(b.lng - a.lng)
-  const lat1 = toRad(a.lat)
-  const lat2 = toRad(b.lat)
-  const t = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
-  return R * (2 * Math.atan2(Math.sqrt(t), Math.sqrt(1 - t)))
-}
-
-function mapNearbyToCareOptions(
-  places: Array<{ name: string; lat: number; lng: number; tags?: Record<string,string> }>,
-  here: Coords,
-  insurance: string
-): CareOption[] {
-  const hasIns = insurance.trim().length > 0
-  const inNet = hasIns ? /aetna|blue|anthem|cigna|uhc|kaiser/i.test(insurance) : null
-
-  return places.map(p => {
-    const miles = haversineMiles(here, { lat: p.lat, lng: p.lng })
-    const dist = miles ? `${miles.toFixed(1)} mi` : '—'
-    const type = venueTypeFromNameOrTags(p.name, p.tags)
-    const price =
-      type === 'er' ? '$350+' : type === 'urgent' ? '$120–$280' : '$85–$160'
-    return {
-      name: p.name,
-      distance: dist,
-      wait: null,
-      inNetwork: inNet,
-      priceRange: price,
-      open: true,
-      lat: p.lat, lng: p.lng,
-      typeGuess: type,
-    }
+function fileToDataURL(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const fr = new FileReader()
+    fr.onerror = () => reject(new Error('read failed'))
+    fr.onload = () => resolve(String(fr.result))
+    fr.readAsDataURL(file)
   })
 }
 
-/* ============================== UX: download + toasts ============================== */
-function useDownloadUrl(text: string, filename = 'no-trek-plan.md') {
-  const [href, setHref] = useState<string | null>(null)
-  useEffect(() => {
-    const blob = new Blob([text], { type: 'text/markdown' })
-    const url = URL.createObjectURL(blob)
-    setHref(url)
-    return () => URL.revokeObjectURL(url)
-  }, [text])
-  return { href, filename }
+function filterAllowed(cites?: Citation[]) {
+  const seen = new Set<string>()
+  return (cites || []).filter((ci) => {
+    if (!ci?.url) return false
+    const d = domainOf(ci.url)
+    const ok = ALLOWED_DOMAINS.some((allow) => d.endsWith(allow))
+    if (!ok || seen.has(ci.url)) return false
+    seen.add(ci.url)
+    return true
+  })
 }
 
-function useToasts() {
-  const [toasts, setToasts] = useState<Array<{ id: number; text: string }>>([])
-  const idRef = useRef(1)
-  function push(text: string) {
-    const id = idRef.current++
-    setToasts(t => [...t, { id, text }])
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), 2500)
+function outlineByRisk(r: Risk) {
+  return r === 'severe'
+    ? 'rgba(239,68,68,0.65)'
+    : r === 'moderate'
+    ? 'rgba(245,158,11,0.58)'
+    : 'rgba(255,255,255,0.38)'
+}
+function glowByRisk(r: Risk) {
+  return r === 'severe'
+    ? 'rgba(239,68,68,0.38)'
+    : r === 'moderate'
+    ? 'rgba(245,158,11,0.34)'
+    : 'rgba(120,190,255,0.38)'
+}
+
+async function backfillCitations(text: string): Promise<Citation[]> {
+  try {
+    const r = await fetch('/api/no-trek/cite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, allowedDomains: ALLOWED_DOMAINS }),
+    })
+    if (!r.ok) return []
+    const j = await r.json()
+    return filterAllowed(j.citations || [])
+  } catch {
+    return []
   }
-  return { toasts, push }
+}
+
+function placeBlurb(p: Place) {
+  const bits: string[] = []
+  if (typeof p.rating === 'number') bits.push(`${p.rating.toFixed(1)}★${p.reviews ? ` · ${p.reviews}` : ''}`)
+  if (typeof p.distance_km === 'number') bits.push(`${p.distance_km.toFixed(1)} km`)
+  if (p.price) bits.push(`price ${p.price}`)
+  const s1 = `${p.name} offers convenient care${bits.length ? ` (${bits.join(' · ')})` : ''}.`
+  const s2 = p.reason || 'Chosen by a composite of reviews, distance, and affordability.'
+  const s3 = p.scoreNotes || (p.in_network ? 'May be in-network; confirm coverage.' : 'Confirm insurance and any facility fees.')
+  return [s1, s2, s3].join(' ')
+}
+
+/* ============================== Splash (match landing) ============================== */
+function SplashIntro({ onDone }: { onDone: () => void }) {
+  const [fade, setFade] = useState(false)
+  useEffect(() => {
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const sitTime = reduced ? 0 : 1000
+    const fadeDur = reduced ? 0 : 600
+    const t1 = setTimeout(() => setFade(true), sitTime)
+    const t2 = setTimeout(() => onDone(), sitTime + fadeDur)
+    return () => { clearTimeout(t1); clearTimeout(t2) }
+  }, [onDone])
+
+  return (
+    <div
+      aria-hidden
+      className={`fixed inset-0 z-50 grid place-items-center transition-opacity duration-700 ${fade ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
+      style={{ background: BRAND_BLUE }}
+    >
+      <div className="text-white font-extrabold tracking-tight italic text-6xl sm:text-7xl md:text-8xl select-none">
+        NO TREK
+      </div>
+    </div>
+  )
 }
 
 /* ============================== Page ============================== */
 export default function IntakePage() {
-  const [step, setStep] = useState<number>(1)
-  const [drawerOpen, setDrawerOpen] = useState(false)
-  const [showAllNearby, setShowAllNearby] = useState(false)
-  const [viewMode, setViewMode] = useState<'list' | 'map'>('list')
-  const [filterType, setFilterType] = useState<'all' | 'er' | 'urgent' | 'clinic'>('all')
-  const [sortKey, setSortKey] = useState<'distance' | 'price' | 'open'>('distance')
+  const search = useSearchParams()
 
-  const [form, setForm] = useState<TriageForm>({
-    q: '',
-    severity: '',
-    onset: '',
-    pain: 0,
-    bodyArea: '',
-    ageBand: '',
-    pregnant: false,
-    conditions: '',
-    zip: '',
-    useLocation: false,
-    insurance: '',
-    redFlagDeformity: false,
-    redFlagOpenWound: false,
-    redFlagNumbness: false,
-    redFlagCannotMove: false,
-    redFlagSevereSwelling: false,
-  })
+  const [connected, setConnected] = useState<boolean | null>(null)
 
-  // Real-world additions
-  const [coords, setCoords] = useState<Coords>(null)
-  const [nearby, setNearby] = useState<Array<{ name: string; lat: number; lng: number; tags?: Record<string,string> }>>([])
-  const [nearbyLoading, setNearbyLoading] = useState(false)
-  const [nearbyError, setNearbyError] = useState<string | null>(null)
-  const [radiusUsed, setRadiusUsed] = useState<number | null>(null)
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    {
+      id: uid(),
+      role: 'assistant',
+      text:
+        'Hi — I’m Stella, No Trek’s virtual helper. I’ll ask focused medical questions, cite trusted sources, and surface nearby care and costs. What’s going on today?',
+    },
+  ])
+  const [draft, setDraft] = useState('')
+  const [sending, setSending] = useState(false)
 
-  const plan = useMemo(() => buildPlan(form), [form])
-  const topic = useMemo(() => extractTopic(form), [form.q, form.bodyArea])
+  const [risk, setRisk] = useState<Risk>('low')
+  const [riskTrail, setRiskTrail] = useState<Risk[]>(['low'])
+  const [insights, setInsights] = useState<InsightCard[]>([])
+  const [places, setPlaces] = useState<Place[]>([])
+  const [activePlace, setActivePlace] = useState<Place | null>(null)
+  const [placeFullscreen, setPlaceFullscreen] = useState(false)
 
-  const { toasts, push: pushToast } = useToasts()
+  const [fullCard, setFullCard] = useState<InsightCard | null>(null)
 
-  const next = () => setStep(s => Math.min(4, s + 1))
-  const back = () => setStep(s => Math.max(1, s - 1))
-  const setField = <K extends keyof TriageForm>(key: K, value: TriageForm[K]) =>
-    setForm(prev => ({ ...prev, [key]: value }))
+  const [evidenceLock, setEvidenceLock] = useState(true)
+  const [hardEvidence, setHardEvidence] = useState(true)
+  const [gateMsg, setGateMsg] = useState<string | null>(null)
+  const [showSources, setShowSources] = useState(false)
 
-  // Ask the browser for geolocation when toggled
-  const geo = useBrowserLocation(form.useLocation)
+  const [showAllPlaces, setShowAllPlaces] = useState(false)
 
-  // Keep coords in state + auto-fill ZIP from reverse-geocode
+  const [imageFile, setImageFile] = useState<File | null>(null)
+  const [imagePreview, setImagePreview] = useState<string | null>(null)
+  const [imageConsent, setImageConsent] = useState<boolean>(false)
+
+  const [zip, setZip] = useState<string>('')
+
+  const [showSplash, setShowSplash] = useState(true)
+
+  // NEW: follow-ups state
+  const [tasks, setTasks] = useState<Task[]>([])
+  const [showTasks, setShowTasks] = useState(false)
+
+  // NEW: relaxed gating toggle
+  const [showUnverified, setShowUnverified] = useState(false)
+
+  const endRef = useRef<HTMLDivElement | null>(null)
+  const textRef = useRef<HTMLTextAreaElement | null>(null)
+  const chatRef = useRef<HTMLDivElement | null>(null)
+
+  // Memory of asked questions to avoid repetition
+  const askedRef = useRef<Set<string>>(new Set())
+
+  // Live-call bubble state (for the concierge wow)
+  const [callViz, setCallViz] = useState<{ status: 'idle'|'calling'|'ok'|'failed'; transcript: string[]; placeName?: string }>(
+    { status: 'idle', transcript: [] }
+  )
+
+  const [showScrollBtn, setShowScrollBtn] = useState(false)
   useEffect(() => {
-    if (!geo.coords) return
-    setCoords(geo.coords)
-    pushToast('Using your approximate location')
-    // Only fill ZIP if the user didn’t type one
-    if (!form.zip) {
-      fetch(`/api/no-trek?action=revgeo&lat=${geo.coords.lat}&lng=${geo.coords.lng}`)
-        .then(r => r.ok ? r.json() : Promise.reject(r.statusText))
-        .then(data => { if (data?.zip) { setForm(prev => ({ ...prev, zip: data.zip })); pushToast(`ZIP detected: ${data.zip}`) } })
-        .catch(() => {})
+    const el = chatRef.current
+    if (!el) return
+    const onScroll = () => {
+      const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+      setShowScrollBtn(!nearBottom)
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [geo.coords])
+    el.addEventListener('scroll', onScroll)
+    onScroll()
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+  function scrollToBottom() {
+    chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' })
+  }
 
-  // Load nearby with radius expansion & de-duplication
   useEffect(() => {
-    const shouldFetch = form.useLocation ? !!coords : !!form.zip && form.zip.trim().length >= 3
-    if (!shouldFetch) return
+    try {
+      const saved = localStorage.getItem('nt_intake_session_v1')
+      if (saved) {
+        const j = JSON.parse(saved)
+        if (Array.isArray(j.messages)) setMessages(j.messages)
+        if (j.risk) setRisk(j.risk)
+        if (Array.isArray(j.riskTrail)) setRiskTrail(j.riskTrail)
+        if (Array.isArray(j.insights)) setInsights(j.insights)
+        if (Array.isArray(j.places)) setPlaces(j.places)
+        if (typeof j.zip === 'string') setZip(j.zip)
+        if (typeof j.evidenceLock === 'boolean') setEvidenceLock(j.evidenceLock)
+      }
+      const tSaved = localStorage.getItem('nt_intake_tasks_v1')
+      if (tSaved) {
+        const tj = JSON.parse(tSaved)
+        if (Array.isArray(tj)) setTasks(tj)
+      }
+    } catch {}
+  }, [])
+  useEffect(() => {
+    const snapshot = { messages, risk, riskTrail, insights, places, zip, evidenceLock }
+    localStorage.setItem('nt_intake_session_v1', JSON.stringify(snapshot))
+  }, [messages, risk, riskTrail, insights, places, zip, evidenceLock])
+  useEffect(() => {
+    localStorage.setItem('nt_intake_tasks_v1', JSON.stringify(tasks))
+  }, [tasks])
 
-    async function run() {
-      setNearbyLoading(true); setNearbyError(null)
+  useEffect(() => {
+    ;(async () => {
       try {
-        let latLng = coords
-        if (!latLng && form.zip) {
-          // Convert ZIP -> coords
-          const resZip = await fetch(
-            `https://nominatim.openstreetmap.org/search?format=jsonv2&countrycodes=us&postalcode=${encodeURIComponent(form.zip)}&limit=1`
-          )
-          const arr = await resZip.json()
-          if (Array.isArray(arr) && arr[0]) {
-            latLng = { lat: Number(arr[0].lat), lng: Number(arr[0].lon) }
-            setCoords(latLng)
-            pushToast(`Using ZIP ${form.zip}`)
-          }
-        }
-        if (!latLng) return
+        const r = await fetch('/api/no-trek/status', { cache: 'no-store' })
+        const j = await r.json()
+        setConnected('connected' in j ? !!j.connected : true)
+      } catch {
+        setConnected(false)
+      }
+    })()
+  }, [])
 
-        const radii = [7000, 12000, 20000]
-        const acc: any[] = []
-        const seen = new Set<string>()
+  useEffect(() => {
+    const t = setTimeout(() => setShowSplash(false), 900)
+    return () => clearTimeout(t)
+  }, [])
 
-        for (const r of radii) {
-          const resp = await fetch(`/api/no-trek?action=nearby&lat=${latLng.lat}&lng=${latLng.lng}&radius=${r}`)
-          const j = await resp.json()
-          const items: any[] = Array.isArray(j?.places) ? j.places : []
-          for (const e of items) {
-            const key = `${(e.tags?.name || e.name || '').toLowerCase()}@${e.lat?.toFixed(5)},${e.lng?.toFixed(5)}`
-            if (!seen.has(key) && e.lat && e.lng) {
-              seen.add(key)
-              acc.push(e)
-            }
-          }
-          if (acc.length >= 10) { setRadiusUsed(r); break }
-          setRadiusUsed(r) // track latest tried
-        }
-        setNearby(acc)
-      } catch (e: any) {
-        setNearbyError('Could not load nearby options.')
-      } finally {
-        setNearbyLoading(false)
+  useEffect(() => {
+    const el = textRef.current
+    if (!el) return
+    el.style.height = '0px'
+    el.style.height = Math.min(el.scrollHeight, 140) + 'px'
+  }, [draft])
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, sending])
+
+  const [bootedFromLanding, setBootedFromLanding] = useState(false)
+  useEffect(() => {
+    const q = search.get('q')
+    const z = search.get('zip')
+    if (z) setZip(z)
+    if (q && !bootedFromLanding) {
+      setBootedFromLanding(true)
+      handleSend(q)
+    }
+  }, [search, bootedFromLanding])
+
+  const debug = search.get('debug') === '1'
+
+  const accent = BRAND_BLUE
+  const outline = useMemo(() => outlineByRisk(risk), [risk])
+  const glow = useMemo(() => glowByRisk(risk), [risk])
+
+  const sessionSources = useMemo(() => {
+    const out: Citation[] = []
+    const push = (c?: Citation[]) => filterAllowed(c).forEach((ci) => out.push(ci))
+    insights.forEach((i) => push(i.citations))
+    messages.forEach((m) => push(m.citations))
+    const seen = new Set<string>()
+    return out.filter((c) => (seen.has(c.url) ? false : (seen.add(c.url), true)))
+  }, [insights, messages])
+
+  async function onPickImage(file: File | null) {
+    setImageFile(file)
+    setImageConsent(false)
+    if (!file) return setImagePreview(null)
+    const preview = await fileToDataURL(file)
+    setImagePreview(preview)
+  }
+
+  function mergeInsights(prev: InsightCard[], incoming: InsightCard[]): InsightCard[] {
+    const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim()
+    const map = new Map<string, InsightCard>()
+    prev.forEach((c) => map.set(norm(c.title), c))
+    incoming.forEach((c) => {
+      const k = norm(c.title)
+      const exists = map.get(k)
+      if (!exists) {
+        map.set(k, c)
+      } else {
+        map.set(k, {
+          ...exists,
+          body: c.body || exists.body,
+          confidence: c.confidence || exists.confidence,
+          urgency: c.urgency || exists.urgency,
+          at: c.at || exists.at,
+          why: Array.from(new Set([...(exists.why || []), ...(c.why || [])])),
+          next: Array.from(new Set([...(exists.next || []), ...(c.next || [])])),
+          citations: filterAllowed([...(exists.citations || []), ...(c.citations || [])]),
+        })
+      }
+    })
+    return Array.from(map.values())
+  }
+
+  /* ---------- Review Gate + Scoring (deterministic) ---------- */
+  const REVIEW_GATE = (p: Place) => {
+    const hasDirectRating = (p.rating ?? 0) > 0 && (p.reviews ?? 0) > 0
+    const hasQuotedReview = !!p.reviewCite?.url
+    const hasScoreReviewSource = (p.scoreSources || []).some((c) => isReviewDomain(c.url))
+    return hasDirectRating || hasQuotedReview || hasScoreReviewSource
+  }
+
+  function priceLevel(p?: Place['price']) {
+    return p === '$' ? 1 : p === '$$' ? 2 : p === '$$$' ? 3 : p === '$$$$' ? 4 : 0
+  }
+
+  function computeScores(p: Place) {
+    const rating = typeof p.rating === 'number' ? clamp(p.rating, 0, 5) : 0
+    const reviews = typeof p.reviews === 'number' ? Math.max(0, p.reviews) : 0
+    const dist = typeof p.distance_km === 'number' ? Math.max(0, p.distance_km) : 30
+    const priceBand = priceLevel(p.price)
+
+    const ratingScore = rating / 5
+    const volumeScore = Math.min(1, Math.log10((reviews || 1) + 1) / 2.3)
+    const distanceScore = 1 - Math.min(1, dist / 18)
+    const haveCost = typeof p.est_cost_min === 'number' || typeof p.est_cost_max === 'number'
+    const costMid = haveCost
+      ? ((p.est_cost_min ?? p.est_cost_max ?? 0) + (p.est_cost_max ?? p.est_cost_min ?? 0)) / 2
+      : undefined
+    const costScore = haveCost
+      ? clamp(1 - (costMid! / 450), 0, 1)
+      : priceBand === 0
+      ? 0.6
+      : clamp(1 - (priceBand - 1) / 3, 0, 1)
+
+    const composite = 0.55 * ratingScore + 0.15 * volumeScore + 0.20 * distanceScore + 0.10 * costScore
+
+    const overall = Number((composite * 5).toFixed(2))
+    const score = {
+      overall,
+      bedside: rating ? Number(rating.toFixed(2)) : undefined,
+      cost: Number((costScore * 5).toFixed(2)),
+      wait: undefined,
+      distance: Number((distanceScore * 5).toFixed(2)),
+    }
+
+    const why: string[] = []
+    if (rating >= 4.2) why.push('strong patient rating')
+    if (reviews > 100) why.push('many reviews')
+    if (dist < 8) why.push('close by')
+    if (haveCost) why.push(`lower estimated cost ~$${Math.round(costMid!)}`)
+    else if (priceBand && priceBand <= 2) why.push('lower price band')
+
+    let notes = ''
+    if (haveCost) {
+      const floor = p.est_cost_min ?? p.est_cost_max
+      const ceil = p.est_cost_max ?? p.est_cost_min
+      notes = `Estimated cost $${Math.round(floor!)}–$${Math.round(ceil!)} (lower is better).`
+    } else if (p.price) {
+      notes = `Price band ${p.price} (proxy).`
+    }
+
+    return { score, reason: p.reason || (why.length ? `Chosen for ${why.join(', ')}` : undefined), scoreNotes: notes }
+  }
+
+  const reviewedPlaces = useMemo(() => (showUnverified ? places : places.filter(REVIEW_GATE)), [places, showUnverified])
+  function rankPlaces(input: Place[]): Place[] {
+    return [...input].map((p) => ({ ...p, ...computeScores(p) })).sort((a, b) => (b.score?.overall ?? 0) - (a.score?.overall ?? 0))
+  }
+
+  function openPlace(p: Place) {
+    setActivePlace(p)
+    setPlaceFullscreen(false)
+    const bits: string[] = []
+    if (typeof p.rating === 'number') bits.push(`rating ${p.rating.toFixed(1)}★${p.reviews ? ` (${p.reviews} reviews)` : ''}`)
+    if (typeof p.distance_km === 'number') bits.push(`${p.distance_km.toFixed(1)} km away`)
+    if (p.price) bits.push(`price band ${p.price}`)
+    if (p.est_cost_min || p.est_cost_max) {
+      const lo = p.est_cost_min ?? p.est_cost_max
+      const hi = p.est_cost_max ?? p.est_cost_min
+      bits.push(`est. cost $${Math.round(lo!)}–$${Math.round(hi!)}`)
+    }
+    if (p.reason) bits.push(p.reason)
+
+    setMessages((m) => [
+      ...m,
+      {
+        id: uid(),
+        role: 'assistant',
+        text: `Why we recommend ${p.name}:\n• ${bits.join('\n• ')}\nWe weigh verified reviews, distance, and affordability. These are suggestions—not medical care.`,
+        citations: filterAllowed(p.scoreSources),
+      },
+    ])
+  }
+
+  async function requestAICall(place?: Place) {
+    setCallViz({ status: 'calling', transcript: ['Dialing...', 'Navigating phone tree…'], placeName: place?.name })
+    try {
+      const r = await fetch('/api/no-trek/call', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ place }),
+      })
+      const ok = r.ok
+      setMessages((m) => [
+        ...m,
+        {
+          id: uid(),
+          role: 'assistant',
+          text: ok
+            ? `I can call ${place ? `${place.name}` : 'the clinic'} to check availability, wait time, and estimated cost, and report back with notes.`
+            : `The call feature isn’t configured yet. You can call directly${place?.phone ? ` at ${place.phone}` : ''}.`,
+        },
+      ])
+      setCallViz(v => ({ ...v, status: ok ? 'ok' : 'failed', transcript: [...v.transcript, ok ? 'Connected.' : 'Call init failed.'] }))
+    } catch {
+      setCallViz(v => ({ ...v, status: 'failed', transcript: [...v.transcript, 'Could not place the call.'] }))
+      setMessages((m) => [
+        ...m,
+        { id: uid(), role: 'assistant', text: `I couldn't start a call right now. You can call directly${place?.phone ? ` at ${place.phone}` : ''}.` },
+      ])
+    }
+  }
+
+  // === FOLLOW-UPS helpers ===
+  function addTask(t: Partial<Task>) {
+    const task: Task = {
+      id: uid('t'),
+      title: t.title || 'Follow-up',
+      due: t.due,
+      notes: t.notes,
+      linkedPlaceId: t.linkedPlaceId,
+      linkedInsightId: t.linkedInsightId,
+      done: false,
+      createdAt: Date.now(),
+    }
+    setTasks((prev) => [task, ...prev])
+    setShowTasks(true)
+  }
+
+  function addPlaceFollowUp(p: Place) {
+    addTask({
+      title: `Call ${p.name} for availability/ETA and cost`,
+      notes: [p.phone ? `Phone: ${p.phone}` : '', p.address || '', p.url ? `Website: ${p.url}` : ''].filter(Boolean).join(' \n'),
+      linkedPlaceId: p.id,
+    })
+  }
+  function addInsightFollowUps(card: InsightCard) {
+    const next = card.next || []
+    if (next.length === 0) return addTask({ title: `Follow up on: ${card.title}`, linkedInsightId: card.id })
+    // Batch into one to avoid spamming
+    addTask({ title: `Next steps — ${card.title}`, notes: next.map((n) => `• ${n}`).join('\n'), linkedInsightId: card.id })
+  }
+  function toggleTaskDone(id: string) { setTasks((prev) => prev.map(t => t.id === id ? { ...t, done: !t.done } : t)) }
+  function deleteTask(id: string) { setTasks((prev) => prev.filter(t => t.id !== id)) }
+  function updateTaskDue(id: string, due?: string) { setTasks(prev => prev.map(t => t.id === id ? { ...t, due } : t)) }
+
+  /* === Places derived (review-gated) === */
+  const rankedPlaces = useMemo(() => rankPlaces(reviewedPlaces), [reviewedPlaces])
+  const top3 = rankedPlaces.slice(0, 3)
+  const nearest10 = [...rankedPlaces].slice(0, 10)
+
+  // Helper: pick next 1–2 unasked questions to reduce repetition
+  function pickNextQuestions(n = 2): string[] {
+    const asked = askedRef.current
+    const remaining = QUESTION_BANK.filter(q => !asked.has(q.key))
+    const pool = remaining.length ? remaining : QUESTION_BANK
+    const out: string[] = []
+    for (const q of pool) {
+      if (out.length >= n) break
+      if (!asked.has(q.key)) {
+        asked.add(q.key)
+        out.push(q.text)
       }
     }
-    run()
-  }, [form.useLocation, form.zip, coords?.lat, coords?.lng]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  const careOptionsReal: CareOption[] = useMemo(() => {
-    if (!nearby.length || !coords) return []
-    return mapNearbyToCareOptions(nearby, coords, form.insurance)
-  }, [nearby, coords, form.insurance])
-
-  // Mobile: open preview drawer as answers accumulate
-  useEffect(() => {
-    if (typeof window !== 'undefined' && window.innerWidth < 768) {
-      if (form.q || form.severity || form.onset) setDrawerOpen(true)
+    if (out.length < n) {
+      for (const q of QUESTION_BANK) {
+        if (q.key !== 'severity' && !out.includes(q.text)) {
+          out.push(q.text)
+          if (out.length >= n) break
+        }
+      }
     }
-  }, [form.q, form.severity, form.onset])
+    return out.slice(0, n)
+  }
 
-  // Derived: filters & sort for "All nearby"
-  const filteredSorted = useMemo(() => {
-    let arr = careOptionsReal
-    if (filterType !== 'all') arr = arr.filter(x => (x.typeGuess || 'clinic') === filterType)
-    // distance numeric
-    function distNum(d: string) { const m = d.match(/([\d.]+)/); return m ? parseFloat(m[1]) : 1e9 }
-    function priceNum(p?: string | null) {
-      if (!p) return 9999
-      if (p.includes('$85')) return 120
-      if (p.includes('$120')) return 200
-      if (p.includes('$350')) return 400
-      return 300
+  async function handleSend(textOverride?: string) {
+    const textValue = (textOverride ?? draft).trim()
+    if (!textValue && !(imageFile && imageConsent)) return
+
+    const userMsg: ChatMessage = {
+      id: uid(),
+      role: 'user',
+      text: textValue || (imageFile ? '[Image uploaded]' : ''),
+      attachments: imageFile ? [{ kind: 'image', name: imageFile.name, preview: imagePreview || undefined }] : undefined,
     }
-    if (sortKey === 'distance') arr = [...arr].sort((a,b)=> distNum(a.distance) - distNum(b.distance))
-    if (sortKey === 'price') arr = [...arr].sort((a,b)=> priceNum(a.priceRange||'') - priceNum(b.priceRange||''))
-    if (sortKey === 'open') arr = [...arr].sort((a,b)=> Number(b.open) - Number(a.open))
-    return arr
-  }, [careOptionsReal, filterType, sortKey])
+    setMessages((m) => [...m, userMsg])
+    if (textOverride === undefined) setDraft('')
+    setSending(true)
+    setGateMsg(null)
+
+    const aId = uid()
+    setMessages((m) => [...m, { id: aId, role: 'assistant', text: '' }])
+
+    let imageBase64: string | undefined
+    if (imageFile && imagePreview && imageConsent) {
+      imageBase64 = imagePreview
+      setImageFile(null)
+      setImagePreview(null)
+      setImageConsent(false)
+    }
+
+    try {
+      const payloadMessages = [
+        { role: 'system', content: TRIAGE_SYSTEM_PROMPT },
+        ...messages.map((x) => ({ role: x.role, content: x.text })),
+        { role: 'user', content: userMsg.text },
+      ] as any
+      if (zip.trim()) payloadMessages.push({ role: 'user', content: `ZIP: ${zip.trim()}` })
+
+      const r = await fetch('/api/no-trek/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          messages: payloadMessages,
+          imageBase64,
+          allowedDomains: ALLOWED_DOMAINS,
+        }),
+      })
+
+      if (!r.ok) {
+        const body = await r.text()
+        await typeFull(aId, `Error: ${r.status} — ${body.slice(0, 200)}`)
+        setSending(false)
+        return
+      }
+
+      const data: ChatResponse = await r.json()
+
+      let finalCites = filterAllowed(data.citations)
+      if (finalCites.length === 0) {
+        finalCites = await backfillCitations(data.text || '')
+      }
+
+      if (hardEvidence && isDeclarative(data.text) && finalCites.length === 0) {
+        const qs = pickNextQuestions(2)
+        const gatherText = `I want to cite this properly. Quick details:\n• ${qs.join('\n• ')}`
+        setMessages((m) => m.map((mm) => (mm.id === aId ? { ...mm, text: gatherText } : mm)))
+        setGateMsg('Collecting details — I’ll synthesize with citations after we have enough signal.')
+        setSending(false)
+        return
+      }
+
+      if (finalCites.length > 0) {
+        setMessages((m) => m.map((mm) => (mm.id === aId ? { ...mm, citations: finalCites } : mm)))
+      } else if (isDeclarative(data.text)) {
+        setMessages((m) => m.map((mm) => (mm.id === aId ? { ...mm, citations: [] } : mm)))
+      }
+
+      if (Array.isArray(data.refImages) && data.refImages.length > 0) {
+        setMessages((m) =>
+          m.map((mm) => (mm.id === aId ? { ...mm, refImages: data.refImages!.slice(0, 3) } : mm))
+        )
+      }
+
+      await typeFull(aId, data.text || '')
+
+      if (data.risk) {
+        setRisk((prev) => {
+          const next = data.risk!
+          setRiskTrail((t) => (t.length && t[t.length - 1] === next ? t : [...t, next]))
+          return next
+        })
+      }
+
+      if (Array.isArray(data.insights)) {
+        const cleaned = data.insights.map((c) => ({
+          ...c,
+          citations: filterAllowed(c.citations),
+          at: c.at || Date.now(),
+        }))
+        setInsights((prev) => mergeInsights(prev, cleaned))
+      }
+
+      if (Array.isArray(data.places)) {
+        setPlaces(data.places)
+      } else {
+        if (debug) {
+          setMessages((m) => [
+            ...m,
+            { id: uid(), role: 'assistant', text: 'No places[] returned by API. Cards depend on places[].' },
+          ])
+        }
+      }
+    } catch (e: any) {
+      await typeFull(aId, `I couldn’t reach the medical engine. (${String(e?.message || e)})`)
+    } finally {
+      setSending(false)
+    }
+  }
+
+  function typeInto(id: string, chunk: string) {
+    setMessages((m) => m.map((mm) => (mm.id === id ? { ...mm, text: (mm.text || '') + chunk } : mm)))
+  }
+  async function typeFull(id: string, full: string) {
+    if (!full) return
+    const step = 16
+    for (let i = 0; i < full.length; i += step) {
+      typeInto(id, full.slice(i, i + step))
+      await new Promise((r) => setTimeout(r, 10))
+    }
+  }
+
+  function exportTxt() {
+    const lines: string[] = []
+    lines.push('No Trek — Intake Session')
+    lines.push(`Risk: ${risk}  |  Trail: ${riskTrail.join(' → ')}`)
+    if (zip.trim()) lines.push(`ZIP: ${zip.trim()}`)
+    lines.push('')
+    messages.forEach((m) => {
+      lines.push(`${m.role.toUpperCase()}: ${m.text}`)
+      if (m.refImages?.length) {
+        m.refImages.forEach((ri) => lines.push(`  [ref] ${ri.title || ri.url} — ${ri.url}`))
+      }
+    })
+    if (insights.length) {
+      lines.push('')
+      lines.push('INSIGHTS:')
+      insights.forEach((i) => lines.push(`- ${i.title}: ${i.body}`))
+    }
+    if (sessionSources.length) {
+      lines.push('')
+      lines.push('SOURCES:')
+      sessionSources.forEach((s) => lines.push(`- ${s.title || s.url}  ${s.url}`))
+    }
+    if (tasks.length) {
+      lines.push('')
+      lines.push('FOLLOW-UPS:')
+      tasks.forEach((t) => lines.push(`- [${t.done ? 'x' : ' '}] ${t.title}${t.due ? ` (due ${new Date(t.due).toLocaleString()})` : ''}`))
+    }
+    const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `no-trek-session-${new Date().toISOString().slice(0, 19)}.txt`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  function resetSession() {
+    setMessages([
+      {
+        id: uid(),
+        role: 'assistant',
+        text:
+          'Hi — I’m Stella, No Trek’s virtual helper. I’ll ask focused medical questions, cite trusted sources, and surface nearby care and costs. What’s going on today?',
+      },
+    ])
+    setRisk('low')
+    setRiskTrail(['low'])
+    setInsights([])
+    setPlaces([])
+    setImageFile(null)
+    setImagePreview(null)
+    setImageConsent(false)
+    askedRef.current = new Set()
+  }
+  function deleteData() {
+    localStorage.removeItem('nt_intake_session_v1')
+    resetSession()
+  }
+
+  const engaged = messages.some((m) => m.role === 'user') || insights.length > 0 || places.length > 0
+  const readyInsightCount = (evidenceLock ? insights.filter((i) => (i.citations || []).length > 0) : insights).length
+  const showRightRail = engaged
+  const cardsActive = readyInsightCount > 0 || rankedPlaces.length > 0
+
+  const openTasks = tasks.filter(t => !t.done).length
+  const hasAssess = readyInsightCount > 0
+  const hasSite = rankedPlaces.length > 0
+  const hasPrice = rankedPlaces.some(p => typeof p.distance_km === 'number' || typeof p.est_cost_min === 'number' || typeof p.est_cost_max === 'number')
+  const bookingState = callViz.status
 
   return (
-    <main className="min-h-screen text-white relative">
-      {/* Background */}
-      <div className="absolute inset-0 -z-10 bg-gradient-to-b from-[#0E5BD8] via-[#0A53C5] to-[#083F98]" />
-      <div aria-hidden className="absolute inset-0 -z-10 opacity-40"
-        style={{
-          background:
-            'radial-gradient(1200px 600px at 80% -10%, rgba(255,255,255,0.18), rgba(255,255,255,0) 60%), radial-gradient(800px 400px at 10% 110%, rgba(255,255,255,0.10), rgba(255,255,255,0) 60%)',
-        }}
-      />
+    <main
+      className="relative min-h-dvh text-white"
+      style={{
+        ['--brand-blue' as any]: BRAND_BLUE,
+        ['--nt-accent' as any]: accent,
+        ['--nt-outline' as any]: outline,
+        ['--nt-glow' as any]: glow,
+      } as CSSProperties}
+    >
+      <BreathingBackground risk={risk} />
+      {showSplash && <SplashIntro onDone={() => setShowSplash(false)} />}
 
-      {/* Toasts */}
-      <div className="fixed top-3 right-3 z-50 space-y-2">
-        {toasts.map(t => (
-          <div key={t.id} className="rounded-lg bg-white/15 ring-1 ring-white/20 px-3 py-2 text-sm shadow-2xl backdrop-blur">
-            {t.text}
-          </div>
-        ))}
-      </div>
-
-      {/* Emergency banner */}
-      <div className="bg-black/20 backdrop-blur-sm text-[13px] text-white/90">
-        <div className="mx-auto max-w-6xl px-6 py-2">If this is an emergency, call 911 or your local emergency number.</div>
-      </div>
-
-      <div className="mx-auto max-w-6xl px-6 py-10 md:py-14">
-        {/* Header */}
-        <header className="mb-6 md:mb-8">
-          <p className="text-xs sm:text-sm text-white/80">Get care now</p>
-          <h1 className="mt-1 text-3xl sm:text-5xl font-extrabold tracking-tight italic">Let’s get you a safe plan.</h1>
-          <p className="mt-3 text-sm text-white/90 max-w-2xl">
-            Not a diagnosis. We show <span className="font-medium">citations</span> and <span className="font-medium">last-updated</span> on results.
-            You confirm before we call or book anything.
-          </p>
-        </header>
-
-        <div className="grid gap-6 lg:grid-cols-5 items-start">
-          {/* Left: triage */}
-          <section className="lg:col-span-3">
-            <LiveChips form={form} plan={plan} />
-            <Stepper step={step} />
-
-            <div className="mt-4 rounded-2xl bg-white/5 ring-1 ring-white/15 p-5 space-y-5 shadow-2xl shadow-black/10">
-              {step === 1 && <StepOne form={form} setField={setField} onNext={next} />}
-              {step === 2 && <StepTwo form={form} setField={setField} onBack={back} onNext={next} />}
-              {step === 3 && <StepThree form={form} setField={setField} onBack={back} onNext={next} />}
-              {step === 4 && <StepFour form={form} setField={setField} onBack={back} />}
-
-              {/* Inline nearby appears once location/ZIP present */}
-              {(form.useLocation || form.zip.trim().length >= 3) && (
-                <InlineNearby
-                  form={form}
-                  options={careOptionsReal}
-                  loading={nearbyLoading}
-                  error={nearbyError}
-                  onViewAll={() => setShowAllNearby(true)}
-                  radiusUsed={radiusUsed}
-                />
-              )}
+      <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-10">
+        {/* Top bar */}
+        {engaged && (
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="text-2xl sm:text-3xl font-extrabold tracking-tight italic">No Trek — Intake</div>
+              <div className="text-xs text-white/70 hidden sm:block">Evidence-linked guidance. Nearby options when helpful.</div>
             </div>
-
-            {/* Mobile: preview drawer */}
-            <div className="mt-4 md:hidden">
-              <button
-                onClick={() => setDrawerOpen(o => !o)}
-                className="w-full rounded-xl bg-white/10 ring-1 ring-white/20 px-4 py-3 text-left text-sm"
-                aria-expanded={drawerOpen}
-              >
-                Preview plan {drawerOpen ? '▲' : '▼'}
-              </button>
-              {drawerOpen && (
-                <div className="mt-3">
-                  <PlanPreview plan={plan} form={form} options={filteredSorted} loadingNearby={nearbyLoading} />
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="pill flex flex-wrap items-center gap-2 px-2 py-1">
+                <label className="inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs text-white/85">
+                  <input type="checkbox" checked={evidenceLock} onChange={(e) => setEvidenceLock(e.target.checked)} className="h-3.5 w-3.5 bg-transparent" />
+                  Evidence lock
+                </label>
+                <label className="inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs text-white/85">
+                  <input type="checkbox" checked={hardEvidence} onChange={(e) => setHardEvidence(e.target.checked)} className="h-3.5 w-3.5 bg-transparent" />
+                  Require citations to reply
+                </label>
+                <label className="inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs text-white/85" title="Show places even if reviews are missing">
+                  <input type="checkbox" checked={showUnverified} onChange={(e) => setShowUnverified(e.target.checked)} className="h-3.5 w-3.5 bg-transparent" />
+                  Show unverified options
+                </label>
+                <button onClick={() => setShowSources(true)} className="rounded-full px-3 py-1 text-xs text-white/85 hover:bg-white/10">Sources ({sessionSources.length})</button>
+                <button onClick={exportTxt} className="rounded-full px-3 py-1 text-xs text-white/85 hover:bg-white/10">Export .txt</button>
+                <button onClick={() => setShowTasks(true)} className="rounded-full px-3 py-1 text-xs text-white/85 hover:bg-white/10">Follow-ups ({openTasks})</button>
+                <button onClick={resetSession} className="rounded-full px-3 py-1 text-xs text-white/85 hover:bg-white/10">Reset</button>
+                <button onClick={deleteData} className="rounded-full px-3 py-1 text-xs text-white/85 hover:bg-white/10" title="Delete local session data & images">Delete my data</button>
+              </div>
+              <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-white/30 bg-white/5 px-3 py-1 backdrop-blur">
+                <span className={cx('h-2 w-2 rounded-full', connected ? 'bg-emerald-400' : connected === false ? 'bg-rose-400' : 'bg-zinc-400')} />
+                <span className="text-xs text-white/80">{connected === null ? 'Checking' : connected ? 'Connected to AI' : 'Base engine'}</span>
+              </div>
+              {debug && (
+                <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-white/30 bg-white/5 px-3 py-1 text-[11px] text-white/80">
+                  debug: places {places.length} → reviewed {reviewedPlaces.length} → ranked {rankedPlaces.length}
                 </div>
               )}
             </div>
+          </div>
+        )}
+
+        {/* ZIP chip */}
+        {engaged && (
+          <div className="mt-4">
+            <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-white/30 bg-white/[0.06] backdrop-blur px-3 py-1.5">
+              <span className="text-xs text-white/75">ZIP (for nearby results):</span>
+              <input
+                value={zip}
+                onChange={(e) => setZip(e.target.value.replace(/[^\d-]/g, '').slice(0, 10))}
+                placeholder="e.g., 10001"
+                className="w-24 bg-transparent text-sm text-white/90 outline-none placeholder:text-white/40"
+                inputMode="numeric"
+                aria-label="ZIP code for nearby results"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* Layout */}
+        <div
+          className={cx('mt-6 grid gap-6', showRightRail ? '' : 'flex justify-center')}
+          style={showRightRail ? ({ gridTemplateColumns: 'minmax(760px,1.45fr) 400px' } as CSSProperties) : ({} as CSSProperties)}
+        >
+          {/* Chat */}
+          <section
+            className={cx('rounded-[22px] bg-white/[0.04] backdrop-blur p-4 sm:p-5 w-full relative overflow-hidden border-[2px] border-white/20', showRightRail ? '' : 'max-w-5xl')}
+            aria-label="No Trek chat"
+          >
+            <div className="flex items-center justify-between px-1">
+              {engaged && <RiskBadge risk={risk} />}
+              <span className="text-[11px] text-white/70">Educational support — not a diagnosis</span>
+            </div>
+
+            {/* Living Care Map */}
+            {engaged && (
+              <div className="mt-3">
+                <LivingCareMap
+                  risk={risk}
+                  hasAssess={hasAssess}
+                  hasSite={hasSite}
+                  hasPrice={hasPrice}
+                  bookingState={bookingState}
+                />
+              </div>
+            )}
+
+            {risk === 'severe' && (
+              <div className="mt-3 rounded-xl border-[2px] border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+                Severe symptoms may require urgent evaluation. If you have life-threatening symptoms, call your local emergency number now.
+              </div>
+            )}
+
+            <div ref={chatRef} className={cx(!engaged ? 'h-[72vh] sm:h-[74vh]' : 'h-[62vh]', 'mt-3 overflow-y-auto space-y-3 pr-1')}>
+              {messages.map((m) => (
+                <div key={m.id} className="group">
+                  <ChatBubble msg={m} />
+                  {m.refImages?.length ? <RefImageStrip images={m.refImages} /> : null}
+                </div>
+              ))}
+              {sending && <TypingDots />}
+              <div ref={endRef} />
+              {showScrollBtn && (
+                <button onClick={scrollToBottom} className="absolute right-3 bottom-3 rounded-full pill px-3 py-1.5 text-xs text-white/90 hover:bg-white/10" title="Jump to latest">
+                  Jump to latest ⤵
+                </button>
+              )}
+            </div>
+
+            <GateBanner msg={gateMsg} onClose={() => setGateMsg(null)} />
+
+            {/* Composer */}
+            <div className="mt-3 border-t border-white/20 pt-3">
+              <form
+                onSubmit={(e) => { e.preventDefault(); handleSend() }}
+                className="flex items-end gap-2"
+                aria-label="Chat composer"
+              >
+                {/* (+) picker */}
+                <label className="relative inline-flex h-12">
+                  <input type="file" accept="image/png,image/jpeg,image/webp" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => onPickImage(e.target.files?.[0] || null)} aria-label="Upload image" />
+                  <span className="inline-flex h-12 items-center gap-2 rounded-xl border-[2px] border-white/30 bg-white/5 px-3 text-sm text-white/85 hover:bg-white/10">
+                    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden className="opacity-90">
+                      <path fill="currentColor" d="M12 2a10 10 0 1 0 .001 20.001A10 10 0 0 0 12 2Zm1 5v4h4v2h-4v4h-2v-4H7V11h4V7h2Z"/>
+                    </svg>
+                    {imageFile ? <span className="max-w-[12rem] truncate">{imageFile.name}</span> : 'Add'}
+                  </span>
+                </label>
+
+                {imagePreview && (
+                  <div className="h-12 w-16 overflow-hidden rounded-lg border-[2px] border-white/30 bg-black/20">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img src={imagePreview} alt="preview" className="h-full w-full object-cover" />
+                  </div>
+                )}
+
+                <div className="relative flex-1">
+                  <textarea
+                    ref={textRef}
+                    value={draft}
+                    onChange={(e) => setDraft(e.target.value)}
+                    placeholder="Describe what happened or ask a question…"
+                    rows={1}
+                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
+                    className="w-full min-h-[46px] h-12 resize-none rounded-3xl bg-white/10 px-4 py-3 pr-16 text-[15px] leading-6 text-white placeholder:text-white/45 focus:outline-none"
+                  />
+                  <button
+                    type="submit"
+                    aria-label="Send message"
+                    disabled={sending || (!draft.trim() && !(imageFile && imageConsent))}
+                    className={cx('absolute right-2 bottom-1.5 grid h-10 w-10 place-items-center rounded-full transition-transform hover:scale-[1.03]', sending ? 'opacity-60' : '')}
+                    style={{ background: BRAND_BLUE }}
+                  >
+                    <span className="text-[12px] tracking-widest text-white">NT</span>
+                  </button>
+                </div>
+              </form>
+
+              {imagePreview && (
+                <label className="mt-2 flex items-center gap-2 text-xs text-white/75">
+                  <input type="checkbox" className="h-3.5 w-3.5 rounded border-white/30 bg-transparent" checked={imageConsent} onChange={(e) => setImageConsent(e.target.checked)} />
+                  Use this image for this session only.
+                </label>
+              )}
+            </div>
+
+            <SessionFile messages={messages} insights={insights} top3={top3} onCall={() => requestAICall(top3[0])} />
+
+            {callViz.status !== 'idle' && (
+              <LiveCallBubble
+                status={callViz.status}
+                transcript={callViz.transcript}
+                placeName={callViz.placeName}
+                onClose={() => setCallViz({ status: 'idle', transcript: [] })}
+              />
+            )}
           </section>
 
-          {/* Right: live plan preview */}
-          <aside className="hidden md:block lg:col-span-2">
-            <PlanPreview plan={plan} form={form} options={filteredSorted} loadingNearby={nearbyLoading} />
-          </aside>
+          {/* Right rail */}
+          {showRightRail && (
+            <aside className="space-y-4 lg:sticky lg:top-8 self-start">
+              {cardsActive ? (
+                <>
+                  {(evidenceLock ? insights.filter((i) => (i.citations || []).length > 0) : insights).map((c, i) => (
+                    <InsightTriad
+                      key={`${c.id}-${i}`}
+                      card={c}
+                      delay={i * CARD_STAGGER_MS}
+                      durationMs={CARD_DURATION_MS}
+                      onAICall={() => requestAICall(top3[0])}
+                      onExpand={() => setFullCard(c)}
+                      onAddFollowUps={() => addInsightFollowUps(c)}
+                    />
+                  ))}
+
+                  {top3.length > 0 && (
+                    <div className="hover-card rounded-[22px] bg-white/[0.04] backdrop-blur p-5 border-[2px] border-white/20" style={{ animation: `floatInRight ${CARD_DURATION_MS}ms ease-out both`, animationDelay: `${(insights.length + 1) * CARD_STAGGER_MS}ms` }}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-white/90 font-medium">No Trek recommends</h3>
+                          <p className="text-[11px] text-white/65 mt-0.5">Verified reviews, distance, affordability.</p>
+                        </div>
+                        <span className="text-xs text-white/70">Top 3</span>
+                      </div>
+                      <div className="mt-3 space-y-3">
+                        {top3.map((p) => (
+                          <PlaceRow key={p.id} p={p} onOpen={() => openPlace(p)} onCall={() => requestAICall(p)} onFollowUp={() => addPlaceFollowUp(p)} showWhy />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {nearest10.length > 0 && (
+                    <div className="hover-card rounded-[22px] bg-white/[0.04] backdrop-blur p-5 border-[2px] border-white/20" style={{ animation: `floatInRight ${CARD_DURATION_MS}ms ease-out both`, animationDelay: `${(insights.length + 2) * CARD_STAGGER_MS}ms` }}>
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-white/90 font-medium">Care options near you</h3>
+                          <p className="text-[11px] text-white/65 mt-0.5">Tap for breakdown and sources.</p>
+                        </div>
+                        <button onClick={() => setShowAllPlaces(true)} className="text-xs text-white/85 hover:underline">
+                          View all ({rankedPlaces.length})
+                        </button>
+                      </div>
+                      <div className="mt-3 space-y-3">
+                        {nearest10.map((p) => (
+                          <PlaceRow key={p.id} p={p} onOpen={() => openPlace(p)} onCall={() => requestAICall(p)} onFollowUp={() => addPlaceFollowUp(p)} />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {places.length > 0 && rankedPlaces.length === 0 && (
+                    <div className="rounded-[22px] bg-white/[0.04] backdrop-blur p-5 border-[2px] border-white/20">
+                      <h3 className="text-white/90 font-medium">No reviewed options yet</h3>
+                      <p className="text-sm text-white/75 mt-1">We hide locations without verifiable ratings or public reviews. Toggle “Show unverified options” above if you’d like to see everything the model returned.</p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <RightRailPlaceholder />
+              )}
+            </aside>
+          )}
         </div>
+
+        <p className="mt-4 text-[11px] text-white/60">
+          No Trek is not a medical provider. This is educational support, not a diagnosis. If you have life-threatening symptoms, call your local emergency number.
+        </p>
       </div>
 
-      {/* All Nearby Overlay */}
-      {showAllNearby && (
-        <AllNearbyOverlay
-          onClose={() => setShowAllNearby(false)}
-          options={filteredSorted}
-          loading={nearbyLoading}
-          filterType={filterType}
-          setFilterType={setFilterType}
-          sortKey={sortKey}
-          setSortKey={setSortKey}
-          viewMode={viewMode}
-          setViewMode={setViewMode}
-          here={coords}
-          zip={form.zip}
-          radiusUsed={radiusUsed}
-          query={form.q}
-          insurance={form.insurance}
+      {activePlace && (
+        <PlaceDrawer
+          place={activePlace}
+          fullscreen={placeFullscreen}
+          onToggleFullscreen={() => setPlaceFullscreen((v) => !v)}
+          onClose={() => setActivePlace(null)}
+          onCall={() => requestAICall(activePlace)}
+          onFollowUp={() => addPlaceFollowUp(activePlace)}
         />
       )}
+      {showAllPlaces && (
+        <AllPlacesPanel
+          places={rankedPlaces}
+          onClose={() => setShowAllPlaces(false)}
+          onOpenPlace={openPlace}
+          onCallPlace={(p) => requestAICall(p)}
+          onFollowUpPlace={(p) => addPlaceFollowUp(p)}
+        />
+      )}
+      {showSources && <SourcesPanel sources={sessionSources} onClose={() => setShowSources(false)} />}
+      {fullCard && <CardFullscreen card={fullCard} onClose={() => setFullCard(null)} onAddFollowUps={() => addInsightFollowUps(fullCard)} />}
+      {showTasks && (
+        <FollowUpsPanel
+          tasks={tasks}
+          places={places}
+          onClose={() => setShowTasks(false)}
+          onToggleDone={toggleTaskDone}
+          onDelete={deleteTask}
+          onUpdateDue={updateTaskDue}
+        />
+      )}
+
+      <style jsx global>{`
+        :root { --brand-blue: ${BRAND_BLUE}; }
+        .pill { border: 2px solid rgba(255,255,255,.30); background: rgba(255,255,255,.06); backdrop-filter: blur(10px); border-radius: 9999px; }
+
+        .hover-card { transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease; will-change: transform; }
+        .hover-card:hover { transform: translateY(-4px); box-shadow: 0 16px 36px rgba(20,60,180,.36), 0 1px 0 rgba(255,255,255,.08) inset; border-color: rgba(255,255,255,.32) !important; }
+
+        .bubble-stella::after { content:''; position:absolute; inset:-1px; border-radius:inherit; pointer-events:none; box-shadow: 0 0 0 2px var(--nt-outline), 0 0 24px var(--nt-glow); }
+
+        @media (prefers-reduced-motion: no-preference) {
+          @keyframes dots { 0% { opacity: .2; } 20% { opacity: 1; } 100% { opacity: .2; } }
+          @keyframes floatInRight { from { opacity: 0; transform: translateX(16px) scale(.985); } to { opacity: 1; transform: translateX(0) scale(1); } }
+          @keyframes sectionIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } }
+          @keyframes softPulse { 0% { opacity:.20; transform:scale(1); } 50% { opacity:.30; transform:scale(1.02); } 100% { opacity:.20; transform:scale(1); } }
+          @keyframes nodePop { from { transform: scale(.92); opacity:.0; } to { transform: scale(1); opacity:1; } }
+          @keyframes lineGrow { from { width: 0; } to { width: 100%; } }
+        }
+      `}</style>
     </main>
   )
 }
 
-/* ============================== UI components ============================== */
-function Stepper({ step }: { step: number }) {
-  const pct = (step / 4) * 100
+/* ============================== Background ============================== */
+function BreathingBackground({ risk }: { risk: Risk }) {
+  const base = risk === 'severe'
+    ? 'linear-gradient(180deg, rgba(200,40,40,1) 0%, rgba(110,24,24,0.98) 60%)'
+    : risk === 'moderate'
+    ? 'linear-gradient(180deg, rgba(245,158,11,1) 0%, rgba(104,60,10,0.98) 60%)'
+    : 'linear-gradient(180deg, rgba(14,91,216,1) 0%, rgba(10,83,197,0.98) 60%)'
   return (
-    <div aria-label={`Step ${step} of 4`} className="space-y-2">
-      <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
-        <div className="h-full bg-white/80 transition-all" style={{ width: `${pct}%` }} />
-      </div>
-      <div className="flex items-center justify-between text-xs text-white/80">
-        <span>Step {step} of 4</span>
-        <span>~45s</span>
-      </div>
+    <div aria-hidden className="pointer-events-none absolute inset-0">
+      <div className="absolute inset-0 transition-[background] duration-500" style={{ background: base }} />
+      <div className="absolute inset-0" style={{ background: 'radial-gradient(800px 620px at 70% 18%, rgba(255,255,255,0.22), transparent 60%)', filter: 'blur(58px)', opacity: 0.24, animation: 'softPulse 10s ease-in-out infinite' }} />
+      <div className="absolute inset-0 bg-[radial-gradient(1000px_520px_at_center,transparent,rgba(0,0,0,0.18))]" />
     </div>
   )
 }
 
-function StepOne({ form, setField, onNext }: {
-  form: TriageForm
-  setField: <K extends keyof TriageForm>(key: K, value: TriageForm[K]) => void
-  onNext: () => void
-}) {
+/* ============================== Living Care Map (WOW) ============================== */
+function LivingCareMap({
+  risk, hasAssess, hasSite, hasPrice, bookingState,
+}: { risk: Risk; hasAssess: boolean; hasSite: boolean; hasPrice: boolean; bookingState: 'idle'|'calling'|'ok'|'failed' }) {
+  const tone =
+    risk === 'severe' ? 'border-red-400/60'
+    : risk === 'moderate' ? 'border-amber-400/60'
+    : 'border-white/25'
+
+  const nodes: { key: string; label: string; status: 'done'|'active'|'idle'|'error'; meta?: string }[] = [
+    { key: 'now', label: 'Now', status: 'done' },
+    { key: 'assess', label: 'Assess', status: hasAssess ? 'done' : 'active' },
+    { key: 'site', label: 'Best Site', status: hasSite ? 'done' : (hasAssess ? 'active' : 'idle') },
+    { key: 'price', label: 'Price/ETA', status: hasPrice ? 'done' : (hasSite ? 'active' : 'idle') },
+    { key: 'book', label: 'Booked', status: bookingState === 'ok' ? 'done' : bookingState === 'calling' ? 'active' : bookingState === 'failed' ? 'error' : 'idle' },
+    { key: 'follow', label: 'Follow-up', status: 'idle' },
+  ]
+
   return (
-    <div className="space-y-4">
-      <label htmlFor="q" className="block text-sm font-medium">What’s going on?</label>
-      <input
-        id="q"
-        value={form.q}
-        onChange={e => setField('q', e.target.value)}
-        placeholder='e.g., "Cut my foot on glass", "Twisted ankle yesterday"'
-        className="w-full rounded-xl border border-white/20 bg-white/10 px-4 py-3 text-white placeholder:text-white/70 focus:outline-none focus:ring-4 focus:ring-white/20"
-      />
-      <div className="flex flex-wrap gap-2">
-        {SUGGESTIONS.map(s => (
-          <button
-            type="button"
-            key={s}
-            onClick={() => setField('q', s)}
-            className="rounded-full bg-white/10 px-3 py-1 text-xs ring-1 ring-white/20 hover:bg-white/15"
-          >
-            {s}
-          </button>
+    <div className={cx('rounded-xl border-[2px] bg-white/[0.04] px-3 py-2', tone)}>
+      <div className="flex items-center gap-2">
+        {nodes.map((n, i) => (
+          <div key={n.key} className="flex items-center gap-2 min-w-0">
+            <MapNode label={n.label} status={n.status} />
+            {i < nodes.length - 1 && <MapSpacer status={nodes[i].status} next={nodes[i+1].status} />}
+          </div>
         ))}
       </div>
-      <div className="pt-2">
-        <button onClick={onNext} className="rounded-xl bg-white text-slate-900 font-medium px-4 py-2 hover:shadow">
-          See my plan
-        </button>
-      </div>
     </div>
   )
 }
 
-function StepTwo({ form, setField, onBack, onNext }: {
-  form: TriageForm
-  setField: <K extends keyof TriageForm>(key: K, value: TriageForm[K]) => void
-  onBack: () => void
-  onNext: () => void
-}) {
-  const flags = [
-    ['redFlagDeformity', 'Obvious deformity'] as const,
-    ['redFlagOpenWound', 'Open wound/bone visible'] as const,
-    ['redFlagNumbness', 'Numbness/tingling'] as const,
-    ['redFlagCannotMove', "Can't move hand/wrist"] as const,
-    ['redFlagSevereSwelling', 'Severe swelling'] as const,
-  ]
+function MapNode({ label, status }: { label: string; status: 'done'|'active'|'idle'|'error' }) {
+  const s =
+    status === 'done' ? 'bg-emerald-400 text-[#0B1C2E] border-emerald-300'
+    : status === 'active' ? 'bg-white/90 text-[#0B1C2E] border-white/80'
+    : status === 'error' ? 'bg-rose-400 text-[#0B1C2E] border-rose-300'
+    : 'bg-white/18 text-white/85 border-white/30'
   return (
-    <div className="space-y-5">
-      <div>
-        <p className="text-sm font-medium mb-2">How severe is it?</p>
-        <div className="grid grid-cols-3 gap-2">
-          {(['mild', 'moderate', 'severe'] as Severity[]).map(s => (
-            <button
-              key={s}
-              onClick={() => setField('severity', s)}
-              className={`rounded-xl px-3 py-2 ring-1 ${form.severity === s ? 'bg-white text-slate-900 ring-white' : 'bg-white/10 ring-white/20 hover:bg-white/15'}`}
-            >
-              {s[0].toUpperCase() + s.slice(1)}
-            </button>
-          ))}
-        </div>
+    <div className="flex items-center gap-2">
+      <div className={cx('grid place-items-center h-6 w-6 rounded-full border text-[11px] font-semibold shadow-sm', s)} style={{ animation: 'nodePop 160ms ease-out both' }}>
+        {status === 'done' ? '✓' : status === 'error' ? '!' : '•'}
       </div>
-
-      <div>
-        <p className="text-sm font-medium mb-2">When did it start?</p>
-        <div className="grid grid-cols-3 gap-2">
-          {(['today', '1-3d', '4+d'] as const).map(v => (
-            <button
-              key={v}
-              onClick={() => setField('onset', v)}
-              className={`rounded-xl px-3 py-2 ring-1 ${form.onset === v ? 'bg-white text-slate-900 ring-white' : 'bg-white/10 ring-white/20 hover:bg-white/15'}`}
-            >
-              {v === 'today' ? 'Today' : v === '1-3d' ? '1–3 days' : '4+ days'}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div>
-        <label htmlFor="pain" className="text-sm font-medium">Pain (0–10)</label>
-        <input
-          id="pain"
-          type="range"
-          min={0}
-          max={10}
-          value={form.pain}
-          onChange={e => setField('pain', Number(e.target.value))}
-          className="w-full accent-white"
-          aria-valuemin={0}
-          aria-valuemax={10}
-          aria-valuenow={form.pain}
-        />
-        <div className="text-xs mt-1">Current: {form.pain}</div>
-      </div>
-
-      <fieldset className="rounded-xl bg-white/5 ring-1 ring-white/15 p-3">
-        <legend className="text-xs text-white/80">Possible fracture signs (any → in-person care)</legend>
-        <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-2 text-sm">
-          {flags.map(([key, label]) => (
-            <label key={key} className="inline-flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={form[key as keyof TriageForm] as boolean}
-                onChange={e => setField(key as any, e.target.checked)}
-                className="h-4 w-4 accent-white"
-              />
-              {label}
-            </label>
-          ))}
-        </div>
-      </fieldset>
-
-      <div className="flex gap-2 pt-1">
-        <button onClick={onBack} className="rounded-xl border border-white/30 px-4 py-2">Back</button>
-        <button onClick={onNext} className="rounded-xl bg-white text-slate-900 px-4 py-2 font-medium">Next</button>
-      </div>
+      <span className="text-xs text-white/85 truncate">{label}</span>
+    </div>
+  )
+}
+function MapSpacer({ status, next }: { status: 'done'|'active'|'idle'|'error'; next: 'done'|'active'|'idle'|'error' }) {
+  const active = status !== 'idle' || next !== 'idle'
+  return (
+    <div className="w-12 h-[2px] bg-white/18 overflow-hidden rounded">
+      <div className={cx('h-full', active ? 'bg-white/80' : 'bg-white/18')} style={{ animation: active ? 'lineGrow 400ms ease-out both' : undefined }} />
     </div>
   )
 }
 
-function StepThree({ form, setField, onBack, onNext }: {
-  form: TriageForm
-  setField: <K extends keyof TriageForm>(key: K, value: TriageForm[K]) => void
-  onBack: () => void
-  onNext: () => void
-}) {
+/* ============================== Live Call Bubble ============================== */
+function LiveCallBubble({
+  status, transcript, placeName, onClose,
+}: { status: 'idle'|'calling'|'ok'|'failed'; transcript: string[]; placeName?: string; onClose: () => void }) {
+  const label =
+    status === 'calling' ? 'Calling…'
+    : status === 'ok' ? 'Connected'
+    : status === 'failed' ? 'Call failed'
+    : ''
   return (
-    <div className="space-y-5">
-      <div>
-        <label htmlFor="area" className="text-sm font-medium">Where on the body?</label>
-        <select
-          id="area"
-          value={form.bodyArea}
-          onChange={e => setField('bodyArea', e.target.value as TriageForm['bodyArea'])}
-          className="mt-1 w-full rounded-xl bg-white/10 ring-1 ring-white/20 px-3 py-2 focus:outline-none focus:ring-4 focus:ring-white/20"
-        >
-          <option value="">Select…</option>
-          <option value="hand">Hand</option>
-          <option value="foot">Foot</option>
-          <option value="leg">Leg</option>
-          <option value="arm">Arm</option>
-          <option value="head">Head</option>
-          <option value="torso">Torso</option>
-          <option value="other">Other</option>
-        </select>
-      </div>
-
-      <div className="grid grid-cols-2 gap-3">
-        <div>
-          <label htmlFor="age" className="text-sm font-medium">Age range</label>
-          <select
-            id="age"
-            value={form.ageBand}
-            onChange={e => setField('ageBand', e.target.value as TriageForm['ageBand'])}
-            className="mt-1 w-full rounded-xl bg-white/10 ring-1 ring-white/20 px-3 py-2"
-          >
-            <option value="">Select…</option>
-            <option value="infant">0–1</option>
-            <option value="child">2–17</option>
-            <option value="adult">18–64</option>
-            <option value="older">65+</option>
-          </select>
+    <div className="fixed right-6 bottom-6 z-40">
+      <div className="hover-card rounded-2xl border-[2px] border-white/25 bg-white/[0.06] backdrop-blur px-4 py-3 w-[260px]">
+        <div className="flex items-center justify-between">
+          <div className="text-sm text-white/90 font-medium">{label}</div>
+          <button onClick={onClose} className="text-[11px] text-white/75 hover:underline">Hide</button>
         </div>
-        <div className="flex items-end gap-2">
-          <input id="pregnant" type="checkbox" checked={form.pregnant} onChange={e => setField('pregnant', e.target.checked)} className="h-4 w-4 accent-white" />
-          <label htmlFor="pregnant" className="text-sm">Pregnant</label>
+        {placeName && <div className="text-xs text-white/70 mt-0.5 truncate">→ {placeName}</div>}
+        <div className="mt-2 space-y-1 max-h-28 overflow-auto">
+          {transcript.map((t, i) => (
+            <div key={i} className="text-[11px] text-white/85">{t}</div>
+          ))}
         </div>
-      </div>
-
-      <div>
-        <label htmlFor="cond" className="text-sm font-medium">Conditions/allergies (optional)</label>
-        <input
-          id="cond"
-          value={form.conditions}
-          onChange={e => setField('conditions', e.target.value)}
-          placeholder="e.g., diabetes, on blood thinners"
-          className="w-full rounded-xl border border-white/20 bg-white/10 px-4 py-3"
-        />
-      </div>
-
-      <div className="flex gap-2 pt-1">
-        <button onClick={onBack} className="rounded-xl border border-white/30 px-4 py-2">Back</button>
-        <button onClick={onNext} className="rounded-xl bg-white text-slate-900 px-4 py-2 font-medium">Next</button>
-      </div>
-    </div>
-  )
-}
-
-function StepFour({ form, setField, onBack }: {
-  form: TriageForm
-  setField: <K extends keyof TriageForm>(key: K, value: TriageForm[K]) => void
-  onBack: () => void
-}) {
-  return (
-    <div className="space-y-5">
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <div>
-          <label htmlFor="zip" className="text-sm font-medium">ZIP (optional)</label>
-          <input
-            id="zip"
-            value={form.zip}
-            onChange={e => setField('zip', e.target.value)}
-            placeholder="e.g., 10001"
-            className="w-full rounded-xl border border-white/20 bg-white/10 px-4 py-3"
-          />
-          <div className="mt-2 flex items-center gap-2 text-xs">
-            <input
-              id="loc"
-              type="checkbox"
-              checked={form.useLocation}
-              onChange={e => setField('useLocation', e.target.checked)}
-              className="h-4 w-4 accent-white"
-            />
-            <label htmlFor="loc">Use my location</label>
+        {status === 'calling' && (
+          <div className="mt-2 h-1.5 rounded-full bg-white/12 overflow-hidden">
+            <div className="h-full w-1/2 animate-pulse bg-white/85" />
           </div>
-        </div>
-        <div>
-          <label htmlFor="ins" className="text-sm font-medium">Insurance (optional)</label>
-          <input
-            id="ins"
-            value={form.insurance}
-            onChange={e => setField('insurance', e.target.value)}
-            placeholder="e.g., Aetna PPO"
-            className="w-full rounded-xl border border-white/20 bg-white/10 px-4 py-3"
-          />
-          <p className="mt-1 text-xs text-white/80">Add to check in-network and estimate out-of-pocket.</p>
-        </div>
-      </div>
-
-      <div className="flex gap-2 pt-1">
-        <button onClick={onBack} className="rounded-xl border border-white/30 px-4 py-2">Back</button>
-        <button
-          onClick={() => document.getElementById('inline-nearby')?.scrollIntoView({ behavior: 'smooth' })}
-          className="rounded-xl bg-white text-slate-900 px-4 py-2 font-medium"
-        >
-          Update plan
-        </button>
+        )}
       </div>
     </div>
   )
 }
 
-function InlineNearby({
-  form, options, loading, error, onViewAll, radiusUsed,
-}: {
-  form: TriageForm
-  options: CareOption[]
-  loading: boolean
-  error: string | null
-  onViewAll: () => void
-  radiusUsed: number | null
-}) {
-  const show = (form.useLocation || form.zip.trim().length >= 3)
-  if (!show) return null
-
+/* ============================== Components ============================== */
+function GateBanner({ msg, onClose }: { msg: string | null; onClose: () => void }) {
+  if (!msg) return null
   return (
-    <div id="inline-nearby" className="mt-4 rounded-xl bg-white/5 ring-1 ring-white/10 p-3">
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-semibold">Nearby options</p>
-        <a href="#plan" className="text-xs underline underline-offset-4">See full panel</a>
-      </div>
+    <div className="mt-2 rounded-lg border-[2px] border-amber-400/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-100 flex items-center justify-between">
+      <span>{msg}</span>
+      <button onClick={onClose} className="text-amber-100/90 hover:underline">Dismiss</button>
+    </div>
+  )
+}
 
-      {loading && <NearbySkeleton />}
-      {error && <p className="mt-2 text-sm text-rose-200">{error}</p>}
+function RiskBadge({ risk }: { risk: Risk }) {
+  const label = risk === 'severe' ? 'Severe risk — act now' : risk === 'moderate' ? 'Moderate risk' : 'Low risk'
+  const tone =
+    risk === 'severe'
+      ? 'border-red-400/60 text-red-200'
+      : risk === 'moderate'
+      ? 'border-amber-400/60 text-amber-100'
+      : 'border-emerald-400/60 text-emerald-100'
+  return (
+    <span className={cx('inline-flex items-center gap-2 rounded-full border-[2px] bg-transparent px-2.5 py-1 text-xs', tone)}>
+      <span className="h-1.5 w-1.5 rounded-full bg-current" />
+      {label}
+    </span>
+  )
+}
 
-      {!loading && !error && (
-        <>
-          <div className="mt-2 space-y-2">
-            {options.slice(0,3).map((c) => (
-              <div key={c.name} className="flex items-center justify-between gap-3 rounded-lg ring-1 ring-white/10 bg-white/5 px-3 py-2">
-                <div className="min-w-0">
-                  <p className="font-medium truncate">{c.name}</p>
-                  <p className="text-xs text-white/80">
-                    {(c.distance !== '—' ? `${c.distance}` : '')}{c.priceRange ? ` · ${c.priceRange}` : ''} {c.typeGuess ? ` · ${c.typeGuess.toUpperCase()}` : ''}
-                  </p>
-                  <p className="text-xs text-white/80">
-                    {c.inNetwork === null ? 'In-network: add insurance' : c.inNetwork ? 'In-network' : 'Out-of-network'}
-                  </p>
-                </div>
-                <div className="shrink-0 flex items-center gap-2">
-                  <Link
-                    href={`/agent-caller?provider=${encodeURIComponent(c.name)}&q=${encodeURIComponent(form.q)}&ins=${encodeURIComponent(form.insurance)}`}
-                    className="rounded-lg bg-white text-slate-900 px-3 py-1.5 text-sm font-medium"
-                  >
-                    Have us call
-                  </Link>
-                </div>
+function ChatBubble({ msg }: { msg: ChatMessage }) {
+  const isUser = msg.role === 'user'
+  const needsSources = !isUser && isDeclarative(msg.text) && (!msg.citations || msg.citations.length === 0)
+  return (
+    <div className={cx('flex', isUser ? 'justify-end' : 'justify-start')}>
+      <div
+        className={cx(
+          'hover-card relative max-w-[90%] sm:max-w-[82%] rounded-3xl px-4 py-3 shadow-sm will-change-transform overflow-hidden border-[2px]',
+          isUser
+            ? 'bg-[var(--brand-blue)] text-white border-transparent'
+            : 'bg-white/[0.06] text-white backdrop-blur border-white/22 bubble-stella'
+        )}
+        style={{ animation: 'sectionIn 240ms ease-out both' }}
+      >
+        <p className="whitespace-pre-wrap break-words text-[15px] leading-6">{msg.text}</p>
+
+        {!isUser && (
+          <>
+            {msg.citations && msg.citations.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {msg.citations.map((c, i) => <CitationChip key={i} c={c} />)}
               </div>
+            ) : needsSources ? (
+              <div className="mt-2 text-[11px] text-white/65">Collecting details — citations will appear with the next synthesis.</div>
+            ) : null}
+          </>
+        )}
+
+        {msg.attachments?.length ? (
+          <div className="mt-2 flex flex-wrap gap-1 text-xs text-white/85">
+            {msg.attachments.map((a, i) => (
+              <span key={i} className="rounded-md border-[2px] border-white/25 bg-white/10 px-2 py-0.5">{a.name}</span>
             ))}
           </div>
+        ) : null}
+      </div>
+    </div>
+  )
+}
 
-          <div className="mt-3 flex items-center justify-between">
-            <button onClick={onViewAll} className="rounded-lg bg-white text-slate-900 px-3 py-1.5 text-sm font-medium">View all nearby</button>
-            <p className="text-[11px] text-white/70">Radius {radiusUsed ? `${(radiusUsed/1000).toFixed(0)} km` : '—'} · Based on {form.useLocation ? 'your location' : `ZIP ${form.zip}`}</p>
+function RefImageStrip({ images }: { images: RefImage[] }) {
+  return (
+    <div className="mt-2 ml-2 flex gap-2">
+      {images.slice(0, 3).map((im, i) => (
+        <a key={i} href={im.url} target="_blank" rel="noreferrer" className="group inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 p-2 hover:bg-white/10" title={im.title || im.url}>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={im.url} alt={im.title || 'reference'} className="h-10 w-14 rounded-md object-cover opacity-90 group-hover:opacity-100" />
+          <span className="text-[11px] text-white/85 truncate max-w-[10rem]">{im.source || domainOf(im.url)}</span>
+        </a>
+      ))}
+    </div>
+  )
+}
+
+function TypingDots() {
+  return (
+    <div className="flex gap-1 items-center text-white/85 text-sm pl-2">
+      <span className="relative flex h-2.5 w-2.5">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white/45 opacity-75"></span>
+        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-white/90"></span>
+      </span>
+      <span className="inline-flex">
+        <span className="mx-0.5 animate-[dots_1.2s_ease-in-out_infinite]">•</span>
+        <span className="mx-0.5 animate-[dots_1.2s_ease-in-out_infinite_200ms]">•</span>
+        <span className="mx-0.5 animate-[dots_1.2s_ease-in-out_infinite_400ms]">•</span>
+      </span>
+    </div>
+  )
+}
+
+function CitationChip({ c }: { c: Citation }) {
+  const d = domainOf(c.url)
+  return (
+    <a href={c.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md border-[2px] border-white/30 bg-white/10 px-2 py-0.5 text-[11px] text-white/90 hover:bg-white/15" title={c.title}>
+      <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden><path fill="currentColor" d="M14 3v2h3.59L7 15.59 8.41 17 19 6.41V10h2V3z" /></svg>
+      {c.source || d || c.title}
+    </a>
+  )
+}
+
+/* ============================== Insight Cards ============================== */
+function InsightTriad({
+  card, delay = 0, durationMs = 500, onAICall, onExpand, onAddFollowUps,
+}: { card: InsightCard; delay?: number; durationMs?: number; onAICall: () => void; onExpand: () => void; onAddFollowUps: () => void }) {
+  const hasWhy = (card.why?.length || 0) > 0
+  const hasNext = (card.next?.length || 0) > 0
+  const hasCites = (card.citations?.length || 0) > 0
+
+  const urgencyTone =
+    card.urgency === 'severe' ? 'border-red-400/60'
+    : card.urgency === 'elevated' ? 'border-amber-400/60'
+    : 'border-white/30'
+
+  const [open, setOpen] = useState(true)
+
+  return (
+    <div className={cx('hover-card rounded-[22px] p-5 backdrop-blur relative overflow-hidden bg-white/[0.04] border-[2px]', urgencyTone)} style={{ animation: `floatInRight ${durationMs}ms ease-out both`, animationDelay: `${delay}ms` }} data-build>
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-white/90 font-medium">{card.title}</h3>
+          <p className="text-[11px] text-white/65 mt-0.5">Concise summary with next steps.</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {card.confidence && (
+            <span className={cx('rounded-full border-[2px] px-2 py-0.5 text-[11px]',
+              card.confidence === 'high' ? 'border-emerald-400/70 text-emerald-200'
+              : card.confidence === 'medium' ? 'border-amber-400/70 text-amber-200'
+              : 'border-white/50 text-white/75')}>
+              {card.confidence} confidence
+            </span>
+          )}
+          <button onClick={onExpand} className="text-xs text-white/80 hover:underline">Fullscreen</button>
+          <button onClick={() => setOpen((v) => !v)} className="text-xs text-white/80 hover:underline">{open ? 'Collapse' : 'Expand'}</button>
+        </div>
+      </div>
+
+      {open && (
+        <>
+          <div className="mt-3 grid gap-3">
+            {hasWhy && (
+              <section className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3" style={{ animation: `sectionIn ${durationMs - 200}ms ease-out both`, animationDelay: `${delay + 120}ms` }}>
+                <header className="text-xs text-white/70">What you’re saying</header>
+                <ul className="mt-1.5 list-disc pl-5 text-sm text-white/85">{card.why!.map((w, i) => <li key={i}>{w}</li>)}</ul>
+              </section>
+            )}
+            <section className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3" style={{ animation: `sectionIn ${durationMs - 200}ms ease-out both`, animationDelay: `${delay + 240}ms` }}>
+              <header className="text-xs text-white/70">What it sounds like</header>
+              <p className="mt-1.5 text-sm leading-6 text-white/85">{card.body}</p>
+            </section>
+            {hasNext && (
+              <section className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3" style={{ animation: `sectionIn ${durationMs - 200}ms ease-out both`, animationDelay: `${delay + 360}ms` }}>
+                <header className="text-xs text-white/70">What to do</header>
+                <ul className="mt-1.5 list-disc pl-5 text-sm text-white/85">{card.next!.map((n, i) => <li key={i}>{n}</li>)}</ul>
+                <div className="mt-2 flex gap-2">
+                  <button onClick={onAICall} className="text-xs rounded-md border-[2px] border-white/30 bg-white/5 px-2 py-1 text-white/90 hover:bg-white/10">Have No Trek call for you</button>
+                  <button onClick={onAddFollowUps} className="text-xs rounded-md border-[2px] border-white/30 bg-white/5 px-2 py-1 text-white/90 hover:bg-white/10">Add to follow-ups</button>
+                </div>
+              </section>
+            )}
           </div>
+
+          {hasCites ? (
+            <div className="mt-3 flex flex-wrap gap-1.5" style={{ animation: `sectionIn ${durationMs - 200}ms ease-out both`, animationDelay: `${delay + 480}ms` }}>
+              {card.citations!.map((c, i) => <CitationChip key={i} c={c} />)}
+            </div>
+          ) : (
+            <div className="mt-3 text-[11px] text-white/60">No acceptable sources provided.</div>
+          )}
+          {card.at && <div className="mt-2 text-[10px] text-white/45">Updated {new Date(card.at).toLocaleTimeString()}</div>}
         </>
       )}
     </div>
   )
 }
 
-function NearbySkeleton() {
+function CardFullscreen({ card, onClose, onAddFollowUps }: { card: InsightCard; onClose: () => void; onAddFollowUps: () => void }) {
   return (
-    <div className="mt-2 space-y-2">
-      {[0,1,2].map(i=>(
-        <div key={i} className="animate-pulse rounded-lg ring-1 ring-white/10 bg-white/5 px-3 py-2">
-          <div className="h-3 w-2/5 bg-white/20 rounded" />
-          <div className="mt-2 h-2 w-3/5 bg-white/10 rounded" />
-        </div>
-      ))}
-    </div>
-  )
-}
-
-function RiskBadge({ level }: { level: RiskLevel }) {
-  const label = level === 'low' ? 'Low' : level === 'moderate' ? 'Moderate' : 'Escalate'
-  const color = level === 'low' ? 'bg-emerald-500' : level === 'moderate' ? 'bg-amber-500' : 'bg-rose-500'
-  return <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${color} transition-all`}>{label} risk</span>
-}
-
-function LiveChips({ form, plan }: { form: TriageForm; plan: Plan }) {
-  const chips: Array<{ label: string; title: string }> = []
-  const topic = extractTopic(form)
-  if (topic) chips.push({ label: `Topic: ${topic}`, title: 'Detected from your description & choices' })
-  if (form.bodyArea) chips.push({ label: `Area: ${form.bodyArea}`, title: 'Body area changes self-care & watch-outs' })
-  if (form.onset) chips.push({ label: `Onset: ${form.onset}`, title: 'Time since start helps decide urgency' })
-  if (form.severity) chips.push({ label: `Severity: ${form.severity}`, title: 'Severity impacts risk' })
-  if (form.pregnant) chips.push({ label: 'Pregnant', title: 'Special considerations apply' })
-  if (form.ageBand) chips.push({ label: `Age: ${form.ageBand}`, title: 'Age changes thresholds' })
-  if (form.insurance) chips.push({ label: 'Insurance added', title: 'Used to estimate costs/in-network' })
-  if (form.zip) chips.push({ label: `ZIP ${form.zip}`, title: 'Used to find nearby care' })
-
-  return (
-    <div className="mb-3 flex flex-wrap gap-2">
-      <RiskBadge level={plan.risk} />
-      {chips.map((c, i)=>(
-        <span key={i} title={c.title} className="inline-flex items-center rounded-full bg-white/10 px-2 py-0.5 text-xs ring-1 ring-white/20">
-          {c.label}
-        </span>
-      ))}
-    </div>
-  )
-}
-
-function CareRow({ c, q, insurance }: { c: CareOption; q: string; insurance: string }) {
-  return (
-    <div className="rounded-xl ring-1 ring-white/10 bg-white/5 p-3 flex items-center justify-between gap-3">
-      <div className="min-w-0">
-        <p className="font-medium truncate">{c.name}</p>
-        <p className="text-xs text-white/80">
-          {c.typeGuess ? `${c.typeGuess.toUpperCase()} · ` : ''}{c.distance !== '—' ? `${c.distance} · ` : ''}{c.open ? 'Open' : 'Closed'}{c.wait ? ` · Wait ${c.wait}` : ' · Wait unknown'}
-        </p>
-        <p className="text-xs text-white/80">
-          {c.inNetwork === null ? 'In-network: add insurance' : c.inNetwork ? 'In-network' : 'Out-of-network'}
-          {c.priceRange ? ` · ${c.priceRange}` : ''}
-        </p>
-      </div>
-      <div className="shrink-0 flex items-center gap-2">
-        <Link
-          href={`/agent-caller?provider=${encodeURIComponent(c.name)}&q=${encodeURIComponent(q)}&ins=${encodeURIComponent(insurance)}`}
-          className="rounded-lg bg-white text-slate-900 px-3 py-1.5 text-sm font-medium"
-        >
-          Have us call
-        </Link>
-        <button className="rounded-lg border border-white/30 px-3 py-1.5 text-sm">Details</button>
-      </div>
-    </div>
-  )
-}
-
-function PlanPreview({ plan, form, options, loadingNearby }: { plan: Plan; form: TriageForm; options: CareOption[]; loadingNearby: boolean }) {
-  const [showCitations, setShowCitations] = useState(false)
-  const locationAvailable = form.useLocation || form.zip.trim().length >= 3
-  const sourcesCount = plan.citationsUsed.length + (plan.coverage?.citationIds?.length || 0)
-
-  return (
-    <div id="plan" className="rounded-3xl bg-white/5 ring-1 ring-white/15 p-5 md:p-6 space-y-4 sticky top-4 shadow-2xl shadow-black/10">
-      <div className="flex items-center justify-between gap-3">
-        <RiskBadge level={plan.risk} />
-        {plan.stale && <span className="text-[11px] rounded-full bg-white/10 ring-1 ring-white/20 px-2 py-0.5">Some sources older—review</span>}
-      </div>
-
-      <div className="rounded-2xl bg-white/10 ring-1 ring-white/20 p-3">
-        <p className="text-sm">
-          <span className="font-semibold">Next step:</span>{' '}
-          {plan.risk === 'escalate' ? 'Head to urgent care / ER' : 'Start self-care now'}.
-        </p>
-      </div>
-
-      <p className="text-white/95">{plan.summary}</p>
-
-      {plan.risk === 'escalate' && !locationAvailable && (
-        <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 p-4">
-          <h3 className="font-semibold">Location needed</h3>
-          <p className="mt-2 text-sm">Share your ZIP or turn on “Use my location” to show nearby urgent care/ER options.</p>
-          <div className="mt-3 flex gap-2">
-            <a
-              href="#zip"
-              onClick={(e) => { e.preventDefault(); document.getElementById('zip')?.scrollIntoView({ behavior: 'smooth' }) }}
-              className="rounded-xl bg-white text-slate-900 px-3 py-2 text-sm font-medium"
-            >
-              Enter ZIP
-            </a>
-            <a
-              href="#loc"
-              onClick={(e) => { e.preventDefault(); document.getElementById('loc')?.scrollIntoView({ behavior: 'smooth' }) }}
-              className="rounded-xl border border-white/30 px-3 py-2 text-sm"
-            >
-              Use my location
-            </a>
+    <div className="fixed inset-0 z-50">
+      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div className="absolute inset-6 sm:inset-10 rounded-2xl bg-[#0E223B] p-6 overflow-y-auto hover-card border-[2px] border-white/20">
+        <div className="flex items-center justify-between">
+          <h3 className="text-white text-xl font-semibold">{card.title}</h3>
+          <div className="flex items-center gap-2">
+            <button onClick={onAddFollowUps} className="rounded-xl border-[2px] border-white/25 bg-white/5 px-3 py-1 text-white/85 hover:bg-white/10">Add to follow-ups</button>
+            <button onClick={onClose} className="rounded-xl border-[2px] border-white/25 bg-white/5 px-3 py-1 text-white/85 hover:bg-white/10">Close</button>
           </div>
         </div>
-      )}
-
-      {plan.selfCare.length > 0 && (
-        <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 p-4">
-          <h3 className="font-semibold">Self-care (do now)</h3>
-          <ul className="mt-2 space-y-2 text-sm">
-            {plan.selfCare.map((s, i) => (
-              <li key={i} className="flex items-start gap-2">
-                <span aria-hidden className="mt-1 h-1.5 w-1.5 rounded-full bg-white/80" />
-                <span className="flex-1">{s.text} <CitationDot id={s.citationId} /></span>
-              </li>
-            ))}
-          </ul>
-          <p className="mt-2 text-xs text-white/80">Takes ~10 minutes.</p>
-        </div>
-      )}
-
-      <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 p-4">
-        <h3 className="font-semibold">Care options near you{' '}
-          <span className="text-xs text-white/70">
-            ({form.useLocation ? 'location on' : form.zip ? `ZIP ${form.zip}` : ''})
-          </span>
-        </h3>
-
-        {loadingNearby && <p className="mt-2 text-sm text-white/80">Loading nearby options…</p>}
-        {!loadingNearby && options?.length === 0 && (
-          <p className="mt-2 text-sm text-white/80">No nearby results. Try a different ZIP.</p>
-        )}
-
-        <div className="mt-3 space-y-3">
-          {options.slice(0, 12).map((c, i) => <CareRow key={`${c.name}-${i}`} c={c} q={form.q} insurance={form.insurance} />)}
-        </div>
-
-        <div className="mt-3 text-xs text-white/70">Showing {Math.min(12, options.length)} of {options.length} results</div>
-
-        <div className="mt-4 rounded-xl bg-white/5 ring-1 ring-white/10 p-3">
-          <p className="text-sm font-semibold">What to expect</p>
-          <ul className="mt-2 text-sm space-y-1">
-            {getExpectations(plan.topic).map((t, i) => (
-              <li key={i} className="flex items-start gap-2">
-                <span aria-hidden className="mt-1 h-1.5 w-1.5 rounded-full bg-white/80" />
-                <span>{t}</span>
-              </li>
-            ))}
-          </ul>
+        <div className="mt-4 space-y-4">
+          {card.why?.length ? (
+            <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-4">
+              <div className="text-xs text-white/70">What you’re saying</div>
+              <ul className="mt-2 list-disc pl-5 text-sm text-white/85">{card.why.map((w, i) => <li key={i}>{w}</li>)}</ul>
+            </div>
+          ) : null}
+          <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-4">
+            <div className="text-xs text-white/70">What it sounds like</div>
+            <p className="mt-2 text-sm text-white/85 leading-6">{card.body}</p>
+          </div>
+          {card.next?.length ? (
+            <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-4">
+              <div className="text-xs text-white/70">What to do</div>
+              <ul className="mt-2 list-disc pl-5 text-sm text-white/85">{card.next.map((n, i) => <li key={i}>{n}</li>)}</ul>
+            </div>
+          ) : null}
+          {card.citations?.length ? (
+            <div className="flex flex-wrap gap-1.5">{card.citations.map((c, i) => <CitationChip key={i} c={c} />)}</div>
+          ) : null}
         </div>
       </div>
+    </div>
+  )
+}
 
-      <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 p-4">
-        <h3 className="font-semibold">Costs & coverage</h3>
-        <div className="mt-2 text-sm">
-          <p>
-            {plan.coverage?.oopEstimate ? <>Est. out-of-pocket: <span className="font-medium">{plan.coverage.oopEstimate}</span></>
-              : 'Add your insurance to estimate out-of-pocket and check in-network.'}
-          </p>
-          {plan.coverage && plan.coverage.assumptions.length > 0 && (
-            <ul className="mt-2 list-disc pl-5 text-white/90">
-              {plan.coverage.assumptions.map((a, i) => <li key={i}>{a}</li>)}
-            </ul>
+function RightRailPlaceholder() {
+  return (
+    <div className="hover-card rounded-[22px] bg-white/[0.03] p-5 border-[2px] border-white/20">
+      <div className="h-4 w-32 rounded bg-white/12" />
+      <div className="mt-3 space-y-3">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="rounded-xl border-[2px] border-white/15 bg-white/[0.03] p-3">
+            <div className="h-3 w-28 rounded bg-white/12" />
+            <div className="mt-2 h-3 w-48 rounded bg-white/12" />
+            <div className="mt-2 h-3 w-40 rounded bg-white/12" />
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 h-5 w-24 rounded bg-white/12" />
+    </div>
+  )
+}
+
+/* ============================== Session File ============================== */
+function SessionFile({ messages, insights, top3, onCall }: { messages: ChatMessage[]; insights: InsightCard[]; top3: Place[]; onCall: () => void }) {
+  const recentUser = useMemo(() => messages.filter((m) => m.role === 'user').slice(-4).map((m) => m.text).filter(Boolean), [messages])
+  const actionList = useMemo(() => {
+    const acc: string[] = []
+    insights.forEach((i) => (i.next || []).forEach((n) => acc.push(n)))
+    return acc.slice(-6)
+  }, [insights])
+
+  const hasAny = recentUser.length > 0 || actionList.length > 0 || top3.length > 0
+  return (
+    <div className="hover-card mt-5 rounded-2xl bg-white/[0.03] p-4 border-[2px] border-white/20">
+      <div className="flex items-center justify-between">
+        <div>
+          <h4 className="text-sm font-semibold text-white/90">Session File</h4>
+          <p className="text-[11px] text-white/65 mt-0.5">Signals, actions, and top picks — auto-built.</p>
+        </div>
+        <span className="text-[11px] text-white/65">Auto-updating</span>
+      </div>
+      {!hasAny ? (
+        <p className="mt-2 text-sm text-white/70">Your session file will build here as we learn more.</p>
+      ) : (
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          {recentUser.length > 0 && (
+            <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3">
+              <div className="text-xs text-white/70">Signals</div>
+              <ul className="mt-1.5 list-disc pl-5 text-sm text-white/85">
+                {recentUser.map((u, i) => <li key={i} style={{ animation: 'sectionIn .4s ease-out both', animationDelay: `${i * 60}ms` }}>{u}</li>)}
+              </ul>
+            </div>
           )}
-          <p className="mt-2 text-xs text-white/80">{plan.priceNote}</p>
-          <button onClick={() => setShowCitations(s => !s)} className="mt-2 text-xs underline underline-offset-4">Where this comes from ({sourcesCount})</button>
-          {showCitations && <div className="mt-2 rounded-xl bg-white/5 ring-1 ring-white/10 p-3"><CitationsList ids={plan.citationsUsed} /></div>}
-        </div>
-      </div>
 
-      <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 p-4">
-        <h3 className="font-semibold">Watch-outs</h3>
-        <ul className="mt-2 space-y-2 text-sm">
-          {plan.watchOuts.map((w, i) => (
-            <li key={i} className="flex items-start gap-2">
-              <span aria-hidden className="mt-1 h-1.5 w-1.5 rounded-full bg-white/80" />
-              <span className="flex-1">{w.text} <CitationDot id={w.citationId} /></span>
-            </li>
-          ))}
-        </ul>
-      </div>
+          {actionList.length > 0 && (
+            <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3">
+              <div className="text-xs text-white/70">Actions</div>
+              <ul className="mt-1.5 list-disc pl-5 text-sm text-white/85">{actionList.map((a, i) => <li key={i} style={{ animation: 'sectionIn .4s ease-out both', animationDelay: `${i * 60}ms` }}>{a}</li>)}</ul>
+              <div className="mt-2"><button onClick={onCall} className="text-xs rounded-md border-[2px] border-white/30 bg-white/5 px-2 py-1 text-white/90 hover:bg-white/10">Have No Trek call for you</button></div>
+            </div>
+          )}
 
-      <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 p-4">
-        <h3 className="font-semibold">After-care</h3>
-        <ul className="mt-2 space-y-2 text-sm">
-          {plan.afterCare.map((a, i) => (
-            <li key={i} className="flex items-start gap-2">
-              <span aria-hidden className="mt-1 h-1.5 w-1.5 rounded-full bg-white/80" />
-              <span className="flex-1">{a.text} <CitationDot id={a.citationId} /></span>
-            </li>
-          ))}
-        </ul>
-        <div className="mt-3 flex flex-wrap gap-2 text-xs">
-          <button className="rounded-full bg-white/10 px-3 py-1 ring-1 ring-white/20">Remind me tonight</button>
-          <button className="rounded-full bg-white/10 px-3 py-1 ring-1 ring-white/20">Remind me tomorrow</button>
-        </div>
-      </div>
-
-      {plan.risk === 'escalate' && (
-        <div className="rounded-2xl bg-rose-500/10 ring-1 ring-rose-300/30 p-4">
-          <h3 className="font-semibold">Go to urgent care/ER now</h3>
-          <p className="mt-2 text-sm">Reasons include severe pain, concerning symptoms, or age-specific risks. See watch-outs above.</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <a href="tel:911" className="rounded-xl bg-white text-slate-900 px-3 py-2 text-sm font-medium">Call 911</a>
-            <Link href="/wait-times" className="rounded-xl border border-white/30 px-3 py-2 text-sm">Nearest ER</Link>
-          </div>
+          {top3.length > 0 && (
+            <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3">
+              <div className="text-xs text-white/70">Top care picks</div>
+              <div className="mt-1.5 space-y-2">
+                {top3.map((p) => (
+                  <div key={p.id} className="flex items-center gap-2">
+                    <div className="h-8 w-10 rounded-md overflow-hidden bg-white/10">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      {p.image ? <img src={p.image} alt={p.name} className="h-full w-full object-cover" /> : null}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-sm text-white/90 truncate">{p.name}</div>
+                      <div className="text-[11px] text-white/65 truncate">
+                        {typeof p.rating === 'number' ? `${p.rating.toFixed(1)}★` : ''} {p.distance_km ? `· ${p.distance_km.toFixed(1)} km` : ''}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
+    </div>
+  )
+}
 
-      <div className="text-[11px] text-white/80">
-        <span className="font-medium">Sources:</span>{' '}
-        {plan.citationsUsed.length > 0 ? <CitationsInline ids={plan.citationsUsed} /> : 'Add details to see sources.'}
+/* ============================== Places ============================== */
+function PlaceRow({ p, onOpen, onCall, onFollowUp, showWhy = false }: { p: Place; onOpen: () => void; onCall: () => void; onFollowUp: () => void; showWhy?: boolean }) {
+  return (
+    <div className="hover-card w-full rounded-xl border-[2px] border-white/20 bg-white/[0.05] p-3">
+      <div className="flex items-center gap-3">
+        <div className="h-12 w-16 overflow-hidden rounded-lg bg-black/20">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          {p.image ? <img src={p.image} alt={p.name} className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-white/35 text-xs">Photo</div>}
+        </div>
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <p className="truncate text-white/90 font-medium">{p.name}</p>
+            {typeof p.rating === 'number' && <Stars value={p.rating} />}
+            {p.price && <span className="text-xs text-white/65">{p.price}</span>}
+          </div>
+          <p className="text-xs text-white/65 truncate">{p.address || ''} {p.distance_km ? `· ${p.distance_km.toFixed(1)} km` : ''}</p>
+          <p className="mt-1 text-xs text-white/80 line-clamp-2">{p.blurb || placeBlurb(p)}</p>
+          {showWhy && (p.reason || p.scoreNotes) && <p className="mt-1 text-xs text-white/80 line-clamp-2">{p.reason || p.scoreNotes}</p>}
+        </div>
+        <div className="ml-auto flex items-center gap-2">
+          <button onClick={onOpen} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">Details</button>
+          <button onClick={onCall} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">Call for me</button>
+          <button onClick={onFollowUp} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">+ Follow-up</button>
+        </div>
       </div>
     </div>
   )
 }
 
-function CitationDot({ id }: { id: string }) {
-  const c = CITATIONS.find(x => x.id === id)
-  if (!c) return null
+function AllPlacesPanel({ places, onClose, onOpenPlace, onCallPlace, onFollowUpPlace }: { places: Place[]; onClose: () => void; onOpenPlace: (p: Place) => void; onCallPlace: (p: Place) => void; onFollowUpPlace: (p: Place) => void }) {
   return (
-    <a
-      href={c.href}
-      target="_blank"
-      rel="noreferrer"
-      className="align-middle ml-1 inline-flex h-2 w-2 rounded-full bg-white/80 hover:bg-white"
-      aria-label={`Source: ${c.org} — ${c.label} (${c.lastUpdated})`}
-      title={`${c.org} • ${c.label} • ${c.lastUpdated}`}
-    />
-  )
-}
-function CitationsInline({ ids }: { ids: string[] }) {
-  const items = ids.map(id => CITATIONS.find(c => c.id === id)).filter(Boolean) as Citation[]
-  return <>{items.map((c, i) => (<span key={c.id}><a className="underline" href={c.href} target="_blank" rel="noreferrer">{c.org}</a>{i < items.length - 1 ? ', ' : ''}</span>))}</>
-}
-function CitationsList({ ids }: { ids: string[] }) {
-  if (ids.length === 0) return <p className="text-xs text-white/80">No coverage sources yet—add insurance.</p>
-  const items = ids.map(id => CITATIONS.find(c => c.id === id)).filter(Boolean) as Citation[]
-  return (
-    <ul className="text-xs space-y-1">
-      {items.map(c => (
-        <li key={c.id} className="flex items-center justify-between gap-3">
+    <div className="fixed inset-0 z-50">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className="absolute right-0 top-0 h-full w-full max-w-xl bg-[#0E223B] border-l border-white/15 shadow-2xl">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/15">
           <div>
-            <span className="font-medium">{c.org}</span> — {c.label}{' '}
-            <span className="ml-1 rounded-full bg-white/10 px-1.5 py-0.5 ring-1 ring-white/15">{c.tier}</span>
+            <h3 className="text-white font-semibold">All nearby care</h3>
+            <p className="text-[11px] text-white/65 mt-0.5">Only clinics with verifiable public reviews are listed unless you toggle “Show unverified”.</p>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="text-white/70">{c.lastUpdated}</span>
-            <a href={c.href} target="_blank" rel="noreferrer" className="underline">Open</a>
-          </div>
-        </li>
-      ))}
-    </ul>
+          <button onClick={onClose} className="rounded-full pill px-3 py-1.5 text-white/90 hover:bg-white/10">Close</button>
+        </div>
+        <div className="p-5 space-y-3 overflow-y-auto h-[calc(100%-60px)]">
+          {places.map((p) => (
+            <div key={p.id} className="hover-card rounded-xl border-[2px] border-white/20 bg-white/[0.05] p-3">
+              <div className="flex items-center gap-3">
+                <div className="h-14 w-20 overflow-hidden rounded-lg bg-black/20">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  {p.image ? <img src={p.image} alt={p.name} className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-white/35 text-xs">Photo</div>}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="truncate text-white/90 font-medium">{p.name}</p>
+                    {typeof p.rating === 'number' && <Stars value={p.rating} />}
+                    {p.price && <span className="text-xs text-white/65">{p.price}</span>}
+                  </div>
+                  <p className="text-xs text-white/65 truncate">{p.address || ''} {p.distance_km ? `· ${p.distance_km.toFixed(1)} km` : ''}</p>
+                  <p className="mt-1 text-xs text-white/80">{p.blurb || placeBlurb(p)}</p>
+                  {p.scoreNotes && <p className="mt-1 text-xs text-white/75">{p.scoreNotes}</p>}
+
+                  {p.reviewCite?.url && (
+                    <div className="mt-2 rounded-lg border-[2px] border-white/15 bg-white/[0.03] p-2">
+                      {p.reviewCite.quote && <p className="text-xs text-white/90">“{p.reviewCite.quote}”</p>}
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-white/70">
+                        {typeof p.reviewCite.rating === 'number' && (<span title={`${p.reviewCite.rating.toFixed(1)}★`}>★ {p.reviewCite.rating.toFixed(1)}</span>)}
+                        {p.reviewCite.author && <span>— {p.reviewCite.author}</span>}
+                        <a className="underline hover:text-white/90" href={p.reviewCite.url} target="_blank" rel="noreferrer">{p.reviewCite.source || domainOf(p.reviewCite.url)}</a>
+                        {p.reviewCite.date && <span>({p.reviewCite.date})</span>}
+                      </div>
+                    </div>
+                  )}
+
+                  {p.scoreSources?.length ? (
+                    <div className="mt-2 flex flex-wrap gap-1.5">{p.scoreSources.map((c, i) => <CitationChip key={i} c={c} />)}</div>
+                  ) : null}
+                </div>
+                <div className="ml-auto flex items-center gap-2">
+                  <button onClick={() => onOpenPlace(p)} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">Details</button>
+                  <button onClick={() => onCallPlace(p)} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">Call for me</button>
+                  <button onClick={() => onFollowUpPlace(p)} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">+ Follow-up</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   )
 }
 
-/* ============================== All Nearby Overlay (List/Map) ============================== */
-function AllNearbyOverlay({
-  onClose, options, loading, filterType, setFilterType, sortKey, setSortKey, viewMode, setViewMode, here, zip, radiusUsed, query, insurance
-}: {
-  onClose: () => void
-  options: CareOption[]
-  loading: boolean
-  filterType: 'all'|'er'|'urgent'|'clinic'
-  setFilterType: (t: 'all'|'er'|'urgent'|'clinic') => void
-  sortKey: 'distance'|'price'|'open'
-  setSortKey: (s: 'distance'|'price'|'open') => void
-  viewMode: 'list'|'map'
-  setViewMode: (m: 'list'|'map') => void
-  here: Coords
-  zip: string
-  radiusUsed: number | null
-  query: string
-  insurance: string
-}) {
+/* ============================== Place Drawer ============================== */
+function PlaceDrawer({ place, fullscreen, onToggleFullscreen, onClose, onCall, onFollowUp }: { place: Place; fullscreen: boolean; onToggleFullscreen: () => void; onClose: () => void; onCall: () => void; onFollowUp: () => void }) {
+  const bullets: string[] = []
+  if (typeof place.rating === 'number') bullets.push(`${place.rating.toFixed(1)}★ ${place.reviews ? `(${place.reviews} reviews)` : ''}`)
+  if (typeof place.distance_km === 'number') bullets.push(`${place.distance_km.toFixed(1)} km away`)
+  if (place.price) bullets.push(`price band ${place.price}`)
+  if (place.est_cost_min || place.est_cost_max) {
+    const lo = place.est_cost_min ?? place.est_cost_max
+    const hi = place.est_cost_max ?? place.est_cost_min
+    bullets.push(`est. cost $${Math.round(lo!)}–$${Math.round(hi!)}`)
+  }
+  if (place.reason) bullets.push(place.reason)
+
   return (
-    <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm">
-      <div className="absolute inset-x-0 bottom-0 md:inset-y-8 md:mx-auto md:max-w-3xl">
-        <div className="rounded-t-2xl md:rounded-2xl bg-white/10 ring-1 ring-white/20 shadow-2xl">
-          <div className="flex items-center justify-between p-4">
-            <div>
-              <p className="text-sm">All nearby options</p>
-              <p className="text-xs text-white/70">
-                {zip ? `ZIP ${zip}` : 'Your location'} · Radius {radiusUsed ? `${(radiusUsed/1000).toFixed(0)} km` : '—'}
-              </p>
+    <div className="fixed inset-0 z-50">
+      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+      <div className={cx('absolute bg-[#0E223B] border-t border-white/15 shadow-2xl', fullscreen ? 'inset-0 rounded-none' : 'bottom-0 left-0 right-0 rounded-t-3xl')}>
+        <div className="mx-auto max-w-4xl p-5">
+          <div className="flex items-start gap-4">
+            <div className="h-28 w-44 overflow-hidden rounded-xl bg-black/20">
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              {place.image ? <img src={place.image} alt={place.name} className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-white/35 text-xs">Photo</div>}
             </div>
-            <button onClick={onClose} className="rounded-lg border border-white/30 px-3 py-1.5 text-sm">Close</button>
-          </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between">
+                <h3 className="text-white text-lg font-semibold">{place.name}</h3>
+                <div className="flex items-center gap-2">
+                  <button onClick={onToggleFullscreen} className="rounded-xl border-[2px] border-white/25 bg-white/5 px-3 py-1 text-white/85 hover:bg-white/10">{fullscreen ? 'Exit fullscreen' : 'Fullscreen'}</button>
+                  <button onClick={onClose} className="rounded-xl border-[2px] border-white/25 bg-white/5 px-3 py-1 text-white/85 hover:bg-white/10">Close</button>
+                </div>
+              </div>
+              <p className="text-white/75 text-sm mt-0.5">{place.address || ''} {place.distance_km ? `· ${place.distance_km.toFixed(1)} km` : ''}</p>
 
-          <div className="px-4 pb-4 space-y-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="inline-flex items-center gap-1 bg-white/10 ring-1 ring-white/20 rounded-full px-2 py-1 text-xs">
-                <span>Filter:</span>
-                {(['all','er','urgent','clinic'] as const).map(t=>(
-                  <button key={t}
-                    onClick={()=>setFilterType(t)}
-                    className={`rounded-full px-2 py-0.5 ${filterType===t?'bg-white text-slate-900':'hover:bg-white/15'}`}
-                  >
-                    {t.toUpperCase()}
-                  </button>
-                ))}
+              <div className="mt-2 grid gap-3">
+                <section className="rounded-lg border-[2px] border-white/20 bg-white/[0.04] p-3">
+                  <header className="text-xs text-white/70">About this place</header>
+                  <p className="mt-1 text-sm text-white/85">{place.blurb || placeBlurb(place)}</p>
+                </section>
+
+                {bullets.length > 0 && (
+                  <section className="rounded-lg border-[2px] border-white/20 bg-white/[0.04] p-3">
+                    <header className="text-xs text-white/70">Why we picked this</header>
+                    <ul className="mt-1 list-disc pl-5 text-sm text-white/85">{bullets.map((b, i) => <li key={i}>{b}</li>)}</ul>
+                  </section>
+                )}
+
+                {place.reviewCite?.url && (
+                  <section className="rounded-lg border-[2px] border-white/20 bg-white/[0.04] p-3">
+                    <header className="text-xs text-white/70">Recent review (citation)</header>
+                    {place.reviewCite.quote && <p className="mt-1 text-sm text-white/90">“{place.reviewCite.quote}”</p>}
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-white/70">
+                      {typeof place.reviewCite.rating === 'number' && (<span title={`${place.reviewCite.rating.toFixed(1)}★`}>★ {place.reviewCite.rating.toFixed(1)}</span>)}
+                      {place.reviewCite.author && <span>— {place.reviewCite.author}</span>}
+                      <a className="underline hover:text-white/90" href={place.reviewCite.url} target="_blank" rel="noreferrer">{place.reviewCite.source || domainOf(place.reviewCite.url)}</a>
+                      {place.reviewCite.date && <span>({place.reviewCite.date})</span>}
+                    </div>
+                  </section>
+                )}
+
+                {place.score && (
+                  <section className="rounded-lg border-[2px] border-white/20 bg-white/[0.04] p-3">
+                    <header className="text-xs text-white/70">Scores</header>
+                    <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-white/85">
+                      <ScoreBar label="Overall" value={place.score.overall} />
+                      <ScoreBar label="Bedside" value={place.score.bedside} />
+                      <ScoreBar label="Cost" value={place.score.cost} />
+                      <ScoreBar label="Wait" value={place.score.wait} />
+                      <ScoreBar label="Distance" value={place.score.distance} />
+                    </div>
+                    {place.scoreNotes && <p className="mt-2 text-xs text-white/70">{place.scoreNotes}</p>}
+                    {place.scoreSources?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{place.scoreSources.map((c, i) => <CitationChip key={i} c={c} />)}</div> : null}
+                  </section>
+                )}
               </div>
-              <div className="inline-flex items-center gap-1 bg-white/10 ring-1 ring-white/20 rounded-full px-2 py-1 text-xs">
-                <span>Sort:</span>
-                {(['distance','price','open'] as const).map(s=>(
-                  <button key={s}
-                    onClick={()=>setSortKey(s)}
-                    className={`rounded-full px-2 py-0.5 ${sortKey===s?'bg-white text-slate-900':'hover:bg-white/15'}`}
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-              <div className="inline-flex items-center gap-1 bg-white/10 ring-1 ring-white/20 rounded-full px-2 py-1 text-xs ml-auto">
-                <button onClick={()=>setViewMode('list')}
-                  className={`rounded-full px-2 py-0.5 ${viewMode==='list'?'bg-white text-slate-900':'hover:bg-white/15'}`}
-                >List</button>
-                <button onClick={()=>setViewMode('map')}
-                  className={`rounded-full px-2 py-0.5 ${viewMode==='map'?'bg-white text-slate-900':'hover:bg-white/15'}`}
-                >Map</button>
+
+              <div className="mt-3 flex flex-wrap gap-2">
+                {place.phone && (<a className="inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 px-4 py-2 text-sm text-white/90 hover:bg-white/10" href={`tel:${place.phone}`}>Call</a>)}
+                <button onClick={onCall} className="inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 px-4 py-2 text-sm text-white/90 hover:bg-white/10">Have us call</button>
+                <button onClick={onFollowUp} className="inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 px-4 py-2 text-sm text-white/90 hover:bg-white/10">+ Follow-up</button>
+                {place.maps && (<a className="inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 px-4 py-2 text-sm text-white/90 hover:bg-white/10" href={place.maps} target="_blank" rel="noreferrer">Directions</a>)}
+                {place.url && (<a className="inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 px-4 py-2 text-sm text-white/90 hover:bg-white/10" href={place.url} target="_blank" rel="noreferrer">Website</a>)}
               </div>
             </div>
-
-            {loading && <NearbySkeleton />}
-
-            {!loading && viewMode === 'list' && (
-              <div className="space-y-2 max-h-[60vh] overflow-auto pr-1">
-                {options.map((c, i)=>(
-                  <CareRow key={`${c.name}-${i}`} c={c} q={query} insurance={insurance} />
-                ))}
-                {options.length === 0 && <p className="text-sm text-white/80">No results with current filters.</p>}
-              </div>
-            )}
-
-            {!loading && viewMode === 'map' && (
-              <div className="max-h-[60vh]">
-                <MiniMap here={here} options={options} />
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -1308,54 +1738,121 @@ function AllNearbyOverlay({
   )
 }
 
-/* ============================== Mini SVG Map (no external deps) ============================== */
-function MiniMap({ here, options }: { here: Coords, options: CareOption[] }) {
-  // Bounds around points
-  const pts = options.filter(o=>typeof o.lat==='number' && typeof o.lng==='number') as Required<CareOption>[]
-  const all = [...pts, ...(here ? [{ name:'You', distance:'', wait:null, inNetwork:null, priceRange:null, open:true, lat: here.lat, lng: here.lng, typeGuess:'clinic' as const }] : [])]
-  if (all.length === 0) return <div className="rounded-xl bg-white/5 ring-1 ring-white/10 p-6 text-sm">No mappable points.</div>
-
-  const minLat = Math.min(...all.map(p=>p.lat))
-  const maxLat = Math.max(...all.map(p=>p.lat))
-  const minLng = Math.min(...all.map(p=>p.lng))
-  const maxLng = Math.max(...all.map(p=>p.lng))
-  const pad = 0.02
-  const W = 800, H = 420
-
-  function proj(lat: number, lng: number) {
-    const x = (lng - (minLng - pad)) / ((maxLng - minLng) + 2*pad)
-    const y = 1 - (lat - (minLat - pad)) / ((maxLat - minLat) + 2*pad)
-    return { x: x * W, y: y * H }
-  }
-
+/* ============================== Small UI Bits ============================== */
+function Stars({ value }: { value: number }) {
+  const v = clamp(value, 0, 5)
+  const pct = `${(v / 5) * 100}%`
   return (
-    <div className="rounded-xl bg-white/5 ring-1 ring-white/10 overflow-hidden">
-      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-[50vh]">
-        <rect x="0" y="0" width={W} height={H} fill="rgba(255,255,255,0.04)" />
-        {/* grid */}
-        {[...Array(8)].map((_,i)=> <line key={`v${i}`} x1={(i+1)*W/9} y1="0" x2={(i+1)*W/9} y2={H} stroke="rgba(255,255,255,0.08)" />)}
-        {[...Array(4)].map((_,i)=> <line key={`h${i}`} x1="0" y1={(i+1)*H/5} x2={W} y2={(i+1)*H/5} stroke="rgba(255,255,255,0.08)" />)}
-        {/* points */}
-        {pts.map((p,i)=> {
-          const {x,y} = proj(p.lat!, p.lng!)
-          const fill = p.typeGuess==='er' ? 'rgba(244, 63, 94, 0.9)'
-                    : p.typeGuess==='urgent' ? 'rgba(251, 191, 36, 0.9)'
-                    : 'rgba(16, 185, 129, 0.9)'
-          return (
-            <g key={`${p.name}-${i}`} transform={`translate(${x},${y})`} >
-              <circle r="6" fill={fill} />
-              <text x="8" y="4" fontSize="10" fill="white">{p.name}</text>
-            </g>
-          )
-        })}
-        {/* here */}
-        {here && (()=>{ const {x,y}=proj(here.lat, here.lng); return (
-          <g transform={`translate(${x},${y})`}>
-            <rect x="-7" y="-7" width="14" height="14" fill="white" />
-            <text x="10" y="4" fontSize="10" fill="white">You</text>
-          </g>
-        )})()}
-      </svg>
+    <span className="relative inline-block align-middle" title={`${v.toFixed(1)}★`}>
+      <span className="text-white/30">★★★★★</span>
+      <span className="absolute left-0 top-0 overflow-hidden text-white/95" style={{ width: pct }}>★★★★★</span>
+      <span className="sr-only">{v.toFixed(1)} stars</span>
+    </span>
+  )
+}
+
+function ScoreBar({ label, value }: { label: string; value?: number }) {
+  if (typeof value !== 'number') return null
+  const pct = `${clamp(value, 0, 5) * 20}%`
+  return (
+    <div>
+      <div className="flex items-center justify-between text-xs text-white/75 mb-1">
+        <span>{label}</span>
+        <span>{value.toFixed(1)}/5</span>
+      </div>
+      <div className="h-1.5 rounded-full bg-white/12 overflow-hidden">
+        <div className="h-full bg-white/85" style={{ width: pct }} />
+      </div>
+    </div>
+  )
+}
+
+/* ============================== Sources Panel ============================== */
+function SourcesPanel({ sources, onClose }: { sources: Citation[]; onClose: () => void }) {
+  return (
+    <div className="fixed inset-0 z-50">
+      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div className="absolute right-0 top-0 h-full w-full max-w-md bg-[#0E223B]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/15">
+          <div>
+            <h3 className="text-white font-semibold">Session sources</h3>
+            <p className="text-[11px] text-white/65 mt-0.5">Trusted medical domains only.</p>
+          </div>
+          <button onClick={onClose} className="rounded-full pill px-3 py-1.5 text-white/90 hover:bg-white/10">Close</button>
+        </div>
+        <div className="p-5 space-y-3 overflow-y-auto h-[calc(100%-60px)]">
+          {sources.length === 0 ? (
+            <p className="text-white/75 text-sm">No sources yet. As insights appear, you’ll see citations here from reputable medical domains.</p>
+          ) : (
+            sources.map((s, i) => (
+              <a key={i} href={s.url} target="_blank" rel="noreferrer" className="block rounded-xl border-[2px] border-white/20 bg-white/[0.04] p-3 hover:bg-white/[0.08]">
+                <div className="text-white/90 text-sm font-medium">{s.title || s.url}</div>
+                <div className="text-white/70 text-xs mt-0.5">{s.url}</div>
+              </a>
+            ))
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ============================== Follow-ups Panel ============================== */
+function FollowUpsPanel({
+  tasks, places, onClose, onToggleDone, onDelete, onUpdateDue
+}: {
+  tasks: Task[]
+  places: Place[]
+  onClose: () => void
+  onToggleDone: (id: string) => void
+  onDelete: (id: string) => void
+  onUpdateDue: (id: string, due?: string) => void
+}) {
+  function placeNameFor(id?: string) { return places.find(p => p.id === id)?.name }
+  return (
+    <div className="fixed inset-0 z-50">
+      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
+      <div className="absolute right-0 top-0 h-full w-full max-w-md bg-[#0E223B]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/15">
+          <div>
+            <h3 className="text-white font-semibold">Follow-ups</h3>
+            <p className="text-[11px] text-white/65 mt-0.5">Save actions, set a due time, and mark done.</p>
+          </div>
+          <button onClick={onClose} className="rounded-full pill px-3 py-1.5 text-white/90 hover:bg-white/10">Close</button>
+        </div>
+        <div className="p-5 space-y-3 overflow-y-auto h-[calc(100%-60px)]">
+          {tasks.length === 0 ? (
+            <p className="text-white/75 text-sm">No follow-ups yet. Add from insight cards or place rows.</p>
+          ) : (
+            tasks.map((t) => (
+              <div key={t.id} className="rounded-xl border-[2px] border-white/20 bg-white/[0.05] p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <input type="checkbox" checked={!!t.done} onChange={() => onToggleDone(t.id)} className="h-4 w-4" />
+                      <div className="text-white/90 font-medium truncate">{t.title}</div>
+                    </div>
+                    {t.linkedPlaceId && (
+                      <div className="text-[11px] text-white/70 mt-1">Clinic: {placeNameFor(t.linkedPlaceId)}</div>
+                    )}
+                    {t.notes && <p className="text-sm text-white/85 mt-1 whitespace-pre-wrap">{t.notes}</p>}
+                    <div className="mt-2 text-[11px] text-white/70">Created {new Date(t.createdAt || Date.now()).toLocaleString()}</div>
+                  </div>
+                  <div className="flex flex-col items-end gap-2">
+                    <input
+                      type="datetime-local"
+                      value={t.due ? new Date(t.due).toISOString().slice(0,16) : ''}
+                      onChange={(e) => onUpdateDue(t.id, e.target.value ? new Date(e.target.value).toISOString() : undefined)}
+                      className="rounded-md bg-white/10 border border-white/20 px-2 py-1 text-white/90 text-xs"
+                    />
+                    <button onClick={() => onDelete(t.id)} className="text-[11px] text-white/75 hover:underline">Delete</button>
+                  </div>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </div>
     </div>
   )
 }
