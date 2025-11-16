@@ -81,7 +81,7 @@ function PromptPanel() {
         />
         <button
           type="submit"
-          className="shrink-0 rounded-xl bg-blue-600 px-5 py-3 text-white font-semibold shadow-lg transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200"
+          className="shrink-0 rounded-xl bg-blue-600 px-5 py-3 text-white font-semibold cursor-pointer shadow-lg transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200"
         >
           Get my plan
         </button>
