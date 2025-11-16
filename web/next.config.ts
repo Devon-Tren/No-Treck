@@ -1,10 +1,10 @@
-import type { NextConfig } from 'next';
-import path from 'path';
+// next.config.ts
+import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
   turbopack: {
-    root: path.join(__dirname),
+    root: __dirname, // <- force root to /No-Treck/web
   },
-};
+}
 
-export default nextConfig;
+export default nextConfig
