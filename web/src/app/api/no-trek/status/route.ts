@@ -1,16 +1,18 @@
+// File: src/app/api/no-trek/status/route.ts
 import { NextResponse } from 'next/server'
 
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
-export const revalidate = 0
 
 export async function GET() {
-  const hasKey = !!(process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_1)
-  const connected = hasKey
+  const hasKey =
+    !!(process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_1)
 
+  // You could also test your /chat route here if you want,
+  // but this is enough to drive the pill.
   return NextResponse.json({
-    connected,
-    model: connected ? 'gpt-4.1-mini' : undefined,
-    details: connected ? { auth: 'ok' } : { auth: 'missing', hasKey },
+    connected: hasKey,  // <- what your intake page reads
+    hasKey,
+    model: 'gpt-4.1-mini',
   })
 }

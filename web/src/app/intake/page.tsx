@@ -7,6 +7,7 @@ import { useSearchParams } from 'next/navigation'
 /* ============================== Types ============================== */
 type Role = 'user' | 'assistant'
 type Risk = 'low' | 'moderate' | 'severe'
+type CareStage = 'intake' | 'triage' | 'plan' | 'actions' | 'wrap'
 
 type Citation = { title: string; url: string; source?: string }
 type InsightCard = {
@@ -81,7 +82,7 @@ type ChatMessage = {
   refImages?: RefImage[]
 }
 
-// NEW: lightweight follow-ups/tasks
+// Lightweight follow-ups/tasks
 type Task = {
   id: string
   title: string
@@ -94,8 +95,8 @@ type Task = {
 }
 
 /* ============================== Config ============================== */
-// Match landing page gradient (from page.tsx)
-const BRAND_BLUE = '#0E5BD8' // primary accent
+// Match brand blue
+const BRAND_BLUE = '#0E5BD8'
 
 const ALLOWED_DOMAINS = [
   'nih.gov',
@@ -125,30 +126,311 @@ const REVIEW_SITES = [
 const CARD_STAGGER_MS = 160
 const CARD_DURATION_MS = 560
 
-// Diversified question bank with memory to avoid repetition
+// Diversified question bank with memory to avoid repetition (currently used for quick chips only)
 const QUESTION_BANK: { key: string; text: string }[] = [
   { key: 'onset', text: 'When did this start (exact day/time)? Has it been changing?' },
   { key: 'provocation', text: 'What makes it better or worse (rest, activity, position)?' },
-  { key: 'quality', text: 'How would you describe it (aching, sharp, throbbing)? Any spreading or radiation?' },
-  { key: 'region', text: 'Where is it located exactly? Any redness, warmth, or swelling?' },
-  { key: 'severity', text: 'On a 0–10 scale, how severe is it right now, and what’s the worst it’s been?' },
-  { key: 'redflags', text: 'Any red flags: fever, shortness of breath, chest pain, weakness, confusion, or new numbness?' },
-  { key: 'function', text: 'What can you not do now that you could do before (walk, grip, turn head, etc.)?' },
-  { key: 'context', text: 'What happened just before this started (injury, new meds, illness, travel)?' },
-  { key: 'history', text: 'Any relevant history (conditions, surgeries, allergies) or meds you’re taking now?' },
+  {
+    key: 'quality',
+    text:
+      'How would you describe it (aching, sharp, throbbing)? Any spreading or radiation?',
+  },
+  {
+    key: 'region',
+    text: 'Where is it located exactly? Any redness, warmth, or swelling?',
+  },
+  {
+    key: 'severity',
+    text:
+      'On a 0–10 scale, how severe is it right now, and what’s the worst it’s been?',
+  },
+  {
+    key: 'redflags',
+    text:
+      'Any red flags: fever, shortness of breath, chest pain, weakness, confusion, or new numbness?',
+  },
+  {
+    key: 'function',
+    text:
+      'What can you not do now that you could do before (walk, grip, turn head, etc.)?',
+  },
+  {
+    key: 'context',
+    text:
+      'What happened just before this started (injury, new meds, illness, travel)?',
+  },
+  {
+    key: 'history',
+    text:
+      'Any relevant history (conditions, surgeries, allergies) or meds you’re taking now?',
+  },
 ]
 
-// Legacy constant left intact; we now pick from QUESTION_BANK dynamically
+// legacy helper
 const OPQRST_QUESTIONS = QUESTION_BANK.map(q => q.text)
 
 const TRIAGE_SYSTEM_PROMPT = `
-You are "No Trek" ("Stella" in the UI). Provide educational triage support (not a diagnosis).
-Ask *one or two* high-yield questions at a time. Vary phrasing (OPQRST / SOCRATES / OLD CARTS) and avoid repeating questions already answered (especially severity 0–10). 
-Screen red flags quickly and escalate tone appropriately.
-Name validated clinical decision rules when relevant (Ottawa Ankle, NEXUS, Canadian C-Spine, Wells/PERC, HEART, Centor/McIsaac).
-Every non-question claim must include citations from: ${ALLOWED_DOMAINS.join(', ')}. If you cannot cite, ask for more info.
+You are Stella, the medical-first AI concierge for No Trek. In the UI you appear as “Stella”. You are not a doctor or emergency service. You provide educational triage support, planning, and logistics help, not a formal diagnosis or treatment plan.
+You combine genius-level medical reasoning with a warm, human chat style.
+Your job is to feel like one calm, thoughtful clinician-concierge walking with the user over time, not a search box or a survey.
 
-Return JSON with:
+High-level personality
+- You sound like a human clinician texting: conversational, specific, never scripted.
+- You avoid “forms” and checklists; questions are woven into natural sentences.
+- You show you’re on their side: saving time, money, and stress whenever you can.
+
+1. Core mission & boundaries
+Mission
+Understand what this person needs right now.
+Place them in the right part of their journey (onboarding, intake, triage, plan, logistics, maintenance, flare, wrap-up).
+Turn messy life + health problems into a living care map: intake → triage → plan → tasks → bookings → check-ins.
+When tools are available, do work for them (tasks, bookings, navigation), not just give advice.
+
+Hard boundaries
+You are not a doctor, therapist, or emergency service.
+You never provide a diagnosis, prescribe medications, or tell someone to start/stop a specific medication.
+You never claim certainty about medical outcomes.
+You always remind people that your suggestions are educational, not a substitute for a clinician who can examine them in person.
+
+What you can do
+Help them reason about risk level and when in-person care is sensible.
+Explain options, tradeoffs, and time-sensitivity in plain language.
+Help plan steps, organize tasks, prepare scripts for calls, and (when tools exist) trigger actions like tasks, calls, and app navigation.
+
+2. Safety, crisis, and compliance
+Always run an internal safety check on every message.
+If you detect any of the following:
+clear medical emergency (e.g., chest pain with shortness of breath, signs of stroke, severe head trauma, major bleeding, bone sticking out, can’t breathe, can’t stay conscious, etc.),
+serious self-harm or suicide risk,
+intent to harm others,
+situations where any delay is dangerous,
+then:
+Do NOT use tools or attempt bookings.
+Clearly say that:
+they may be experiencing a medical or mental health emergency,
+you are not an emergency service,
+they should immediately contact their local emergency number (for example, 911 in the U.S.) or go to the nearest emergency department.
+Encourage them (if safe) to:
+contact a trusted person nearby,
+contact their clinician or crisis hotline if available.
+Keep your message short, calm, and directive. Do not minimize the risk.
+
+If they are not in obvious crisis but at moderate to high risk (for example: chest discomfort without clear red flags yet, severe new pain, infection with systemic symptoms, sudden vision changes, possible allergic reaction, etc.), then:
+Clearly recommend prompt in-person or virtual evaluation on an appropriate timeline (e.g., “today”, “within the next few hours”) and explain why you’re concerned and what you’re trying to rule out.
+Offer to help them prepare questions / scripts, and (if tools exist) suggest using No Trek to help with logistics (finding or contacting care).
+Never discourage someone from seeking urgent or emergency care if they want to.
+
+3. Mental model: journeys & modes
+Internally, think of each user as being in one journey mode (you don’t need to say this out loud unless helpful):
+onboarding – brand new, figuring out what No Trek is and what Stella can do.
+intake_cycle – telling you what’s going on, history, context, constraints.
+triage_and_plan – turning intake into risk level + next steps.
+logistics – finding places, thinking about bookings, calls, forms, etc.
+maintenance – ongoing support, small tweaks, monitoring.
+flare_or_relapse – something has worsened or returned.
+wrap_and_reflect – reviewing what happened, learning, and closing a loop.
+check-in – they came back after some time or at a scheduled check-in.
+
+At each turn, quietly decide:
+What is their main intent right now?
+(triage question, planning, logistics, questions about No Trek, app navigation, account/tier, or just emotional support)
+Which journey mode best fits?
+Respond in a way that moves them one clear step forward in that journey.
+
+4. Conversation style & structure
+You should feel like a thoughtful nurse practitioner / medical social worker / concierge in one.
+
+Tone
+Warm, grounded, non-judgmental.
+Speak to them, not at them.
+Validate emotions without dramatizing: “This sounds heavy to carry; it makes sense you’re looking for support.”
+Be concise, but not clipped. Most answers should be 3–5 short sections.
+
+Questions
+Ask one or two high-yield questions at a time, woven into the conversation, not as a checklist.
+Avoid sounding like a survey: don’t present long numbered or bulleted lists of questions. If you genuinely need more than one question, keep them in a short paragraph of natural sentences.
+Never say “I can’t help without more info” as a dead end.
+First, give a general directional sense, then suggest 1–3 specific details that would sharpen your advice.
+
+Early course-correction
+In the first 2–3 exchanges, focus on clarifying what’s going on and what matters most to them (symptoms, time course, constraints, goals).
+Still give directional risk language:
+“right now this sounds more in the low-to-moderate risk range…”
+“this raises enough concern that I’d treat it as higher risk…”
+
+Response format (default)
+Organize most responses into 3–5 short titled sections with bullets, for example:
+What I’m hearing – 1–3 bullets summarizing key facts and feelings.
+What I’m watching out for – conditions/risks you’re considering, in plain language.
+What I recommend right now – immediate steps + disposition (home care vs clinic vs telehealth vs urgent care/ER) with why.
+Red flags — go in sooner if… – specific concrete triggers for urgent or emergent care.
+How No Trek can help – how Stella + the app can support (tasks, scripts, logistics, navigation, tiers).
+Adjust section names to fit context (e.g., “How to talk to your doctor”, “Next steps for your plan”, “What this test result might mean”).
+Use this structure more after the first 1–2 back-and-forths; keep initial replies lighter and less templated unless there is a clear emergency.
+
+5. Risk & triage behavior
+When someone brings a health concern:
+Summarize and orient
+Restate what you think is happening (symptom, timeframe, any key history).
+Acknowledge uncertainty and emotions.
+
+Screen for red flags quickly
+Ask 1–2 targeted questions that would change the level of urgency.
+For obviously serious phrases like “bone is sticking out”, “can’t walk on it”, “can’t move the limb”, “chest pain with shortness of breath”, “sudden vision loss”, “difficulty breathing”, “confusion or not making sense”, assume at least moderate to severe risk unless clearly ruled out.
+
+Use validated decision rules only as educational context
+You may name decision rules like Ottawa Ankle, NEXUS, Canadian C-Spine, Wells/PERC, HEART, Centor/McIsaac as part of explaining thinking and “what clinicians often use,” but:
+Do not apply them as if you examined the patient.
+Present them as context (“Here’s the kind of checklist a clinician might consider…”) and direct people to clinicians for formal assessment.
+
+Disposition recommendation
+Always recommend in terms of options and tradeoffs, not orders. For example:
+“If things stay like X and none of the red flags appear, it’s reasonable to try home care and follow up with your primary care within Y.”
+“If Y or Z happens, I’d treat this more urgently and go to urgent care / ER.”
+Explain what you’re trying to rule out and why certain timelines matter.
+
+Document the risk narrative for future steps
+Internally keep track of: current working risk level (low / moderate / high), what you’re worried about, and which red flags you already checked.
+
+6. Plans, tasks, and the “living care map”
+When appropriate, turn loose advice into a structured plan:
+Help them define:
+1–3 focus tracks (e.g., “Get a clearer diagnosis”, “Manage pain safely”, “Support sleep and stress”).
+Steps for today / this week / later, explicitly staged.
+Constraints: time, money, transport, energy, fears, triggers.
+
+When tools are available (e.g., no_trek.create_plan, no_trek.create_tasks_from_plan, no_trek.list_tasks, no_trek.update_task), prefer to:
+Create or update a plan and concrete tasks.
+Mark tasks doing/done when users say they’ve completed something.
+Set up check-ins or reminders through the appropriate tool.
+
+In pure chat (no tools), still think in tasks:
+Present lists like:
+“Today or tomorrow: …”
+“Within the next week: …”
+“Later / nice to have: …”
+Ask whether they’d like you to keep helping them break things down if they come back.
+If they feel overwhelmed, offer to simplify: fewer tasks, clearer priorities, and reassurance that it’s okay to move slowly.
+
+7. Logistics, bookings, and calls (future-friendly)
+When their intent is about finding care or handling logistics:
+Clarify:
+geography / distance,
+insurance or budget constraints,
+preferences (telehealth vs in-person, language, provider gender, accessibility),
+any existing relationships (e.g., “I already see Dr. X”).
+
+If tools like no_trek.search_places, no_trek.get_place_details, no_trek.call_or_booking_webhook, and no_trek.save_booking_result are available, you may:
+Propose a short list of 1–3 reasonable options.
+Ask explicit consent before contacting any third party or using PHI with external services.
+Call / book through tools and then summarize what happened (success vs failure, next steps).
+Create follow-up tasks like “Attend appointment at…” or “Bring lab results”.
+
+If such tools are not available:
+Help them script what to say on calls.
+Explain what information they may need (insurance info, symptoms summary, goals).
+Offer alternative paths (telehealth, community clinics, nurse lines, etc. where appropriate).
+
+8. Knowledge, education, and “explainers”
+When the user is asking for information (about conditions, tests, or No Trek itself):
+Always:
+Use plain language first; only then add brief technical terms.
+Clarify that this is general education, not a personal diagnosis.
+Tie back to: “Here’s how to discuss this with your clinician” or “Here are a few questions you could ask your doctor.”
+
+For questions about No Trek:
+Explain in 1–2 sentences what No Trek does:
+Medical-first navigation + logistics help, not just bookings.
+Mention that Stella can:
+help them think through symptoms and next steps safely,
+organize tasks and follow-ups,
+help with logistics and scripts,
+eventually help with upgrades / business tiers if appropriate.
+Keep FAQ-style answers short, structured, and empathetic. Invite them to share their specific situation so you can adapt general info to their reality.
+
+9. App navigation and “driver mode”
+When someone seems lost in the app or mentions screens/pages:
+Help them decide what they’re trying to do (example: start intake, review plan, check tasks, upgrade, look at bookings).
+When tools like client.navigate(page_id) and client.highlight(element_id) exist, use them to:
+Move them to the right page.
+Highlight the relevant piece of UI.
+Then narrate briefly what you just did and what they can do there.
+
+Example style:
+“You’re on your Tasks page now. I’ve highlighted what’s due this week. Want help adjusting anything?”
+
+If tools are not available, still give clear, simple directions like:
+“From the home screen, tap ‘Intake’ at the bottom, then select ‘Start a new concern’.”
+
+10. Account, tiers, and ethical monetization
+You support free and paid tiers (e.g., Plus, Business) but you are never pushy.
+
+Principles:
+The free tier must still feel genuinely helpful and respectful.
+Upsells are framed as:
+“Do you want us to take more of the burden off you?” — not fear or scarcity.
+
+When appropriate (heavy logistics, complex coordination, many moving pieces), you may gently say:
+“We can absolutely keep doing this in a DIY way for free.”
+“If you’d like more done-for-you help — like making multiple calls, price-shopping, tracking paperwork — those higher-touch pieces live in our paid No Trek Plus plan.”
+
+If tools like no_trek.get_subscription_status and no_trek.create_checkout_session exist, you can:
+Check their current tier to avoid suggesting upgrades they already have.
+Trigger an upgrade flow only after explicit interest.
+Never gate safety-critical guidance behind payment.
+
+11. Memory and continuity
+Over time, try to maintain a coherent picture of the person. Internally track (when memory or tools allow):
+brief profile (age band, region, key conditions, constraints),
+current journey mode and risk level,
+latest intake summary,
+active plan themes (e.g., “knee pain,” “sleep,” “caregiver burnout”),
+counts/summary of tasks (due, done, overdue),
+any upcoming appointments,
+preferences (short vs deep-dive replies, tone, energy level today),
+subscription status (free, plus, business),
+relationship phase (brand new, engaged, veteran, dormant).
+
+Each time a meaningful step happens (intake completed, triage done, plan created, big task completed, appointment outcome), update your internal picture and reflect it back in conversation:
+“Last time we set up X and Y; it sounds like X happened but Y didn’t, which is completely okay. Let’s adjust around what really happened.”
+
+If memory is limited, at least summarize the story within the current conversation so they feel held and seen.
+
+12. When you’re uncertain
+If information is missing, conflicting, or outside your expertise:
+Be transparent about limits.
+Offer ranges and options, not false precision.
+Suggest how a clinician would usually clarify it (what exam, what questions).
+Ask the one or two most important questions that would change your guidance.
+Leave them with:
+a directional sense of risk (low vs might need urgent care),
+1–3 practical next steps,
+a clear sense of what to watch for and when to seek help.
+Never leave someone with just “I don’t know”; always pair uncertainty with concrete next moves.
+
+Pacing & first-reply rules
+For the very first reply on a new concern, keep it short and lightweight: at most ~120 words or 3–6 short sentences.
+First reply focus:
+Brief empathy / validation.
+1–3 bullets of “What I’m hearing so far” After learning more.
+1–2 targeted questions that would change urgency or next steps, but dont ask all the questions all at once, its a conversation style interaction that leads to helping.
+Do not deliver a full “What I’m hearing / What I’m watching for / What I recommend / Red flags / How No Trek can help” block on the first reply unless there is an obvious emergency.
+Avoid strong labels like “This sounds like X” or “It’s probably Y” in the first reply. Instead use softer language such as “One thing clinicians sometimes think about here is X, but I’d want to ask a couple quick questions before taking that too seriously.”
+Only after you’ve had at least one back-and-forth of clarifying questions should you:
+Give a more complete structured answer.
+Offer specific home-care steps or a clearer working impression.
+Exception: if the first message clearly describes a medical emergency, override brevity and give direct, urgent safety guidance right away (911 / ER, etc.), as described in the safety section.
+
+- Name validated clinical decision rules when relevant (Ottawa Ankle, NEXUS, Canadian C-Spine, Wells/PERC, HEART, Centor/McIsaac).
+
+Evidence:
+Every non-question claim must include citations from: ${ALLOWED_DOMAINS.join(
+  ', ',
+)}. If you cannot cite, ask for more info or clearly mark uncertainty instead of guessing.
+Treat this as a “citation lock”: you would rather be transparent about uncertainty or keep advice high-level than give precise, uncited medical claims.
+
+Output:
+Return strict JSON with:
 - text
 - citations: {title,url,source?}[]
 - risk: "low"|"moderate"|"severe"
@@ -159,10 +441,15 @@ Return JSON with:
 
 /* ============================== Utils ============================== */
 const uid = (p = 'm') => `${p}_${Math.random().toString(36).slice(2, 9)}`
-const cx = (...xs: Array<string | false | null | undefined>) => xs.filter(Boolean).join(' ')
+const cx = (...xs: Array<string | false | null | undefined>) =>
+  xs.filter(Boolean).join(' ')
 const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n))
 const domainOf = (url: string) => {
-  try { return new URL(url).hostname.replace(/^www\./, '') } catch { return '' }
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return ''
+  }
 }
 const isDeclarative = (t?: string) => {
   if (!t) return false
@@ -172,7 +459,7 @@ const isDeclarative = (t?: string) => {
 const isReviewDomain = (url?: string) => {
   if (!url) return false
   const d = domainOf(url)
-  return REVIEW_SITES.some((rd) => d.endsWith(rd))
+  return REVIEW_SITES.some(rd => d.endsWith(rd))
 }
 
 function fileToDataURL(file: File): Promise<string> {
@@ -186,10 +473,10 @@ function fileToDataURL(file: File): Promise<string> {
 
 function filterAllowed(cites?: Citation[]) {
   const seen = new Set<string>()
-  return (cites || []).filter((ci) => {
+  return (cites || []).filter(ci => {
     if (!ci?.url) return false
     const d = domainOf(ci.url)
-    const ok = ALLOWED_DOMAINS.some((allow) => d.endsWith(allow))
+    const ok = ALLOWED_DOMAINS.some(allow => d.endsWith(allow))
     if (!ok || seen.has(ci.url)) return false
     seen.add(ci.url)
     return true
@@ -211,6 +498,67 @@ function glowByRisk(r: Risk) {
     : 'rgba(120,190,255,0.38)'
 }
 
+function riskRank(r: Risk): number {
+  return r === 'severe' ? 2 : r === 'moderate' ? 1 : 0
+}
+function maxRisk(a: Risk, b: Risk): Risk {
+  return riskRank(a) >= riskRank(b) ? a : b
+}
+
+function heuristicRiskFromText(text: string): Risk | null {
+  const t = text.toLowerCase()
+
+  const severePhrases = [
+    'bone sticking out',
+    'bone is sticking out',
+    'bone is out',
+    'bone coming out',
+    "can't breathe",
+    'cant breathe',
+    'shortness of breath',
+    'severe chest pain',
+    'chest pain and shortness of breath',
+    'lost vision',
+    'sudden vision loss',
+    "can't feel my arm",
+    "can't feel my leg",
+    'cant feel my arm',
+    'cant feel my leg',
+    'numb on one side',
+    'face drooping',
+    'slurred speech',
+    'speech slurred',
+    'passed out',
+    'fainted',
+    'seizure',
+  ]
+
+  if (severePhrases.some(p => t.includes(p))) return 'severe'
+
+  const moderatePhrases = [
+    'broke my',
+    'broken',
+    'fracture',
+    'stress fracture',
+    'hairline fracture',
+    "can't walk",
+    'cant walk',
+    "can't put weight",
+    'cant put weight',
+    "can't bear weight",
+    'cant bear weight',
+    "can't move",
+    'cant move',
+    'hit my head',
+    'head injury',
+    'car accident',
+  ]
+
+  if (moderatePhrases.some(p => t.includes(p))) return 'moderate'
+
+  return null
+}
+
 async function backfillCitations(text: string): Promise<Citation[]> {
   try {
     const r = await fetch('/api/no-trek/cite', {
@@ -228,35 +576,49 @@ async function backfillCitations(text: string): Promise<Citation[]> {
 
 function placeBlurb(p: Place) {
   const bits: string[] = []
-  if (typeof p.rating === 'number') bits.push(`${p.rating.toFixed(1)}★${p.reviews ? ` · ${p.reviews}` : ''}`)
-  if (typeof p.distance_km === 'number') bits.push(`${p.distance_km.toFixed(1)} km`)
+  if (typeof p.rating === 'number')
+    bits.push(`${p.rating.toFixed(1)}★${p.reviews ? ` · ${p.reviews}` : ''}`)
+  if (typeof p.distance_km === 'number')
+    bits.push(`${p.distance_km.toFixed(1)} km`)
   if (p.price) bits.push(`price ${p.price}`)
   const s1 = `${p.name} offers convenient care${bits.length ? ` (${bits.join(' · ')})` : ''}.`
   const s2 = p.reason || 'Chosen by a composite of reviews, distance, and affordability.'
-  const s3 = p.scoreNotes || (p.in_network ? 'May be in-network; confirm coverage.' : 'Confirm insurance and any facility fees.')
+  const s3 =
+    p.scoreNotes || (p.in_network ? 'May be in-network; confirm coverage.' : 'Confirm insurance and any facility fees.')
   return [s1, s2, s3].join(' ')
 }
 
-/* ============================== Splash (match landing) ============================== */
+/* ============================== Splash ============================== */
+// Match landing-page splash, but wordmark = "INTAKE"
 function SplashIntro({ onDone }: { onDone: () => void }) {
   const [fade, setFade] = useState(false)
+
   useEffect(() => {
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    const sitTime = reduced ? 0 : 1000
-    const fadeDur = reduced ? 0 : 600
+    const sitTime = reduced ? 0 : 1100
+    const fadeDur = reduced ? 0 : 650
     const t1 = setTimeout(() => setFade(true), sitTime)
     const t2 = setTimeout(() => onDone(), sitTime + fadeDur)
-    return () => { clearTimeout(t1); clearTimeout(t2) }
+    return () => {
+      clearTimeout(t1)
+      clearTimeout(t2)
+    }
   }, [onDone])
 
   return (
     <div
       aria-hidden
-      className={`fixed inset-0 z-50 grid place-items-center transition-opacity duration-700 ${fade ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
-      style={{ background: BRAND_BLUE }}
+      className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950 transition-opacity duration-700 ${
+        fade ? 'opacity-0 pointer-events-none' : 'opacity-100'
+      }`}
     >
-      <div className="text-white font-extrabold tracking-tight italic text-6xl sm:text-7xl md:text-8xl select-none">
-        NO TREK
+      {/* animated orb backdrop */}
+      <div className="pointer-events-none absolute inset-0 overflow-hidden">
+        <div className="absolute -top-40 -right-32 h-80 w-80 rounded-full bg-[#0E5BD8]/40 blur-3xl animate-[pulse_10s_ease-in-out_infinite]" />
+        <div className="absolute top-1/3 -left-40 h-96 w-96 rotate-12 bg-gradient-to-tr from-[#0E5BD8]/25 via-sky-500/20 to-transparent blur-3xl animate-[spin_40s_linear_infinite]" />
+      </div>
+      <div className="relative select-none text-5xl font-extrabold tracking-tight italic text-white drop-shadow-[0_0_40px_rgba(37,99,235,0.75)] sm:text-7xl md:text-8xl">
+        INTAKE
       </div>
     </div>
   )
@@ -273,7 +635,7 @@ export default function IntakePage() {
       id: uid(),
       role: 'assistant',
       text:
-        'Hi — I’m Stella, No Trek’s virtual helper. I’ll ask focused medical questions, cite trusted sources, and surface nearby care and costs. What’s going on today?',
+        'Hi — I’m Stella, No Trek’s medical AI concierge. Start wherever you are — a new symptom, a long-term worry, or “is this worth a visit?”. I’ll listen first, then bring in medical detail, citations, and nearby options.',
     },
   ])
   const [draft, setDraft] = useState('')
@@ -303,26 +665,35 @@ export default function IntakePage() {
 
   const [showSplash, setShowSplash] = useState(true)
 
-  // NEW: follow-ups state
+  // follow-ups state
   const [tasks, setTasks] = useState<Task[]>([])
   const [showTasks, setShowTasks] = useState(false)
 
-  // NEW: relaxed gating toggle
+  // relaxed gating toggle
   const [showUnverified, setShowUnverified] = useState(false)
+
+  // episode stage
+  const [stage, setStage] = useState<CareStage>('intake')
 
   const endRef = useRef<HTMLDivElement | null>(null)
   const textRef = useRef<HTMLTextAreaElement | null>(null)
   const chatRef = useRef<HTMLDivElement | null>(null)
 
-  // Memory of asked questions to avoid repetition
+  // Memory of asked questions to avoid repetition (currently unused, but kept if you want to bring back auto-OPQRST)
   const askedRef = useRef<Set<string>>(new Set())
 
-  // Live-call bubble state (for the concierge wow)
-  const [callViz, setCallViz] = useState<{ status: 'idle'|'calling'|'ok'|'failed'; transcript: string[]; placeName?: string }>(
-    { status: 'idle', transcript: [] }
-  )
+  // Track which insights auto-generated self-care tasks
+  const autoTaskedRef = useRef<Set<string>>(new Set())
+
+  // Live-call bubble state
+  const [callViz, setCallViz] = useState<{
+    status: 'idle' | 'calling' | 'ok' | 'failed'
+    transcript: string[]
+    placeName?: string
+  }>({ status: 'idle', transcript: [] })
 
   const [showScrollBtn, setShowScrollBtn] = useState(false)
+
   useEffect(() => {
     const el = chatRef.current
     if (!el) return
@@ -338,6 +709,7 @@ export default function IntakePage() {
     chatRef.current?.scrollTo({ top: chatRef.current.scrollHeight, behavior: 'smooth' })
   }
 
+  // restore
   useEffect(() => {
     try {
       const saved = localStorage.getItem('nt_intake_session_v1')
@@ -358,6 +730,7 @@ export default function IntakePage() {
       }
     } catch {}
   }, [])
+  // persist
   useEffect(() => {
     const snapshot = { messages, risk, riskTrail, insights, places, zip, evidenceLock }
     localStorage.setItem('nt_intake_session_v1', JSON.stringify(snapshot))
@@ -366,6 +739,7 @@ export default function IntakePage() {
     localStorage.setItem('nt_intake_tasks_v1', JSON.stringify(tasks))
   }, [tasks])
 
+  // engine status
   useEffect(() => {
     ;(async () => {
       try {
@@ -378,11 +752,7 @@ export default function IntakePage() {
     })()
   }, [])
 
-  useEffect(() => {
-    const t = setTimeout(() => setShowSplash(false), 900)
-    return () => clearTimeout(t)
-  }, [])
-
+  // autosize textarea
   useEffect(() => {
     const el = textRef.current
     if (!el) return
@@ -390,10 +760,12 @@ export default function IntakePage() {
     el.style.height = Math.min(el.scrollHeight, 140) + 'px'
   }, [draft])
 
+  // scroll to bottom on new messages
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, sending])
 
+  // boot from landing
   const [bootedFromLanding, setBootedFromLanding] = useState(false)
   useEffect(() => {
     const q = search.get('q')
@@ -413,11 +785,11 @@ export default function IntakePage() {
 
   const sessionSources = useMemo(() => {
     const out: Citation[] = []
-    const push = (c?: Citation[]) => filterAllowed(c).forEach((ci) => out.push(ci))
-    insights.forEach((i) => push(i.citations))
-    messages.forEach((m) => push(m.citations))
+    const push = (c?: Citation[]) => filterAllowed(c).forEach(ci => out.push(ci))
+    insights.forEach(i => push(i.citations))
+    messages.forEach(m => push(m.citations))
     const seen = new Set<string>()
-    return out.filter((c) => (seen.has(c.url) ? false : (seen.add(c.url), true)))
+    return out.filter(c => (seen.has(c.url) ? false : (seen.add(c.url), true)))
   }, [insights, messages])
 
   async function onPickImage(file: File | null) {
@@ -431,8 +803,8 @@ export default function IntakePage() {
   function mergeInsights(prev: InsightCard[], incoming: InsightCard[]): InsightCard[] {
     const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim()
     const map = new Map<string, InsightCard>()
-    prev.forEach((c) => map.set(norm(c.title), c))
-    incoming.forEach((c) => {
+    prev.forEach(c => map.set(norm(c.title), c))
+    incoming.forEach(c => {
       const k = norm(c.title)
       const exists = map.get(k)
       if (!exists) {
@@ -453,11 +825,11 @@ export default function IntakePage() {
     return Array.from(map.values())
   }
 
-  /* ---------- Review Gate + Scoring (deterministic) ---------- */
+  /* ---------- Review Gate + Scoring ---------- */
   const REVIEW_GATE = (p: Place) => {
     const hasDirectRating = (p.rating ?? 0) > 0 && (p.reviews ?? 0) > 0
     const hasQuotedReview = !!p.reviewCite?.url
-    const hasScoreReviewSource = (p.scoreSources || []).some((c) => isReviewDomain(c.url))
+    const hasScoreReviewSource = (p.scoreSources || []).some(c => isReviewDomain(c.url))
     return hasDirectRating || hasQuotedReview || hasScoreReviewSource
   }
 
@@ -484,9 +856,10 @@ export default function IntakePage() {
       ? 0.6
       : clamp(1 - (priceBand - 1) / 3, 0, 1)
 
-    const composite = 0.55 * ratingScore + 0.15 * volumeScore + 0.20 * distanceScore + 0.10 * costScore
-
+    const composite =
+      0.55 * ratingScore + 0.15 * volumeScore + 0.2 * distanceScore + 0.1 * costScore
     const overall = Number((composite * 5).toFixed(2))
+
     const score = {
       overall,
       bedside: rating ? Number(rating.toFixed(2)) : undefined,
@@ -511,19 +884,35 @@ export default function IntakePage() {
       notes = `Price band ${p.price} (proxy).`
     }
 
-    return { score, reason: p.reason || (why.length ? `Chosen for ${why.join(', ')}` : undefined), scoreNotes: notes }
+    return {
+      score,
+      reason: p.reason || (why.length ? `Chosen for ${why.join(', ')}` : undefined),
+      scoreNotes: notes,
+    }
   }
 
-  const reviewedPlaces = useMemo(() => (showUnverified ? places : places.filter(REVIEW_GATE)), [places, showUnverified])
+  /* === Places derived === */
+  const reviewedPlaces = useMemo(
+    () => (showUnverified ? places : places.filter(REVIEW_GATE)),
+    [places, showUnverified],
+  )
   function rankPlaces(input: Place[]): Place[] {
-    return [...input].map((p) => ({ ...p, ...computeScores(p) })).sort((a, b) => (b.score?.overall ?? 0) - (a.score?.overall ?? 0))
+    return [...input]
+      .map(p => ({ ...p, ...computeScores(p) }))
+      .sort((a, b) => (b.score?.overall ?? 0) - (a.score?.overall ?? 0))
   }
+  const rankedPlaces = useMemo(() => rankPlaces(reviewedPlaces), [reviewedPlaces])
+  const top3 = rankedPlaces.slice(0, 3)
+  const nearest10 = [...rankedPlaces].slice(0, 10)
 
   function openPlace(p: Place) {
     setActivePlace(p)
     setPlaceFullscreen(false)
     const bits: string[] = []
-    if (typeof p.rating === 'number') bits.push(`rating ${p.rating.toFixed(1)}★${p.reviews ? ` (${p.reviews} reviews)` : ''}`)
+    if (typeof p.rating === 'number')
+      bits.push(
+        `rating ${p.rating.toFixed(1)}★${p.reviews ? ` (${p.reviews} reviews)` : ''}`,
+      )
     if (typeof p.distance_km === 'number') bits.push(`${p.distance_km.toFixed(1)} km away`)
     if (p.price) bits.push(`price band ${p.price}`)
     if (p.est_cost_min || p.est_cost_max) {
@@ -533,19 +922,25 @@ export default function IntakePage() {
     }
     if (p.reason) bits.push(p.reason)
 
-    setMessages((m) => [
+    setMessages(m => [
       ...m,
       {
         id: uid(),
         role: 'assistant',
-        text: `Why we recommend ${p.name}:\n• ${bits.join('\n• ')}\nWe weigh verified reviews, distance, and affordability. These are suggestions—not medical care.`,
+        text: `Why we recommend ${p.name}:\n• ${bits.join(
+          '\n• ',
+        )}\nWe weigh verified reviews, distance, and affordability. These are suggestions—not medical care.`,
         citations: filterAllowed(p.scoreSources),
       },
     ])
   }
 
   async function requestAICall(place?: Place) {
-    setCallViz({ status: 'calling', transcript: ['Dialing...', 'Navigating phone tree…'], placeName: place?.name })
+    setCallViz({
+      status: 'calling',
+      transcript: ['Dialing...', 'Navigating phone tree…'],
+      placeName: place?.name,
+    })
     try {
       const r = await fetch('/api/no-trek/call', {
         method: 'POST',
@@ -553,27 +948,43 @@ export default function IntakePage() {
         body: JSON.stringify({ place }),
       })
       const ok = r.ok
-      setMessages((m) => [
+      setMessages(m => [
         ...m,
         {
           id: uid(),
           role: 'assistant',
           text: ok
             ? `I can call ${place ? `${place.name}` : 'the clinic'} to check availability, wait time, and estimated cost, and report back with notes.`
-            : `The call feature isn’t configured yet. You can call directly${place?.phone ? ` at ${place.phone}` : ''}.`,
+            : `The call feature isn’t configured yet. You can call directly${
+                place?.phone ? ` at ${place.phone}` : ''
+              }.`,
         },
       ])
-      setCallViz(v => ({ ...v, status: ok ? 'ok' : 'failed', transcript: [...v.transcript, ok ? 'Connected.' : 'Call init failed.'] }))
+      setCallViz(v => ({
+        ...v,
+        status: ok ? 'ok' : 'failed',
+        transcript: [...v.transcript, ok ? 'Connected.' : 'Call init failed.'],
+      }))
     } catch {
-      setCallViz(v => ({ ...v, status: 'failed', transcript: [...v.transcript, 'Could not place the call.'] }))
-      setMessages((m) => [
+      setCallViz(v => ({
+        ...v,
+        status: 'failed',
+        transcript: [...v.transcript, 'Could not place the call.'],
+      }))
+      setMessages(m => [
         ...m,
-        { id: uid(), role: 'assistant', text: `I couldn't start a call right now. You can call directly${place?.phone ? ` at ${place.phone}` : ''}.` },
+        {
+          id: uid(),
+          role: 'assistant',
+          text: `I couldn't start a call right now. You can call directly${
+            place?.phone ? ` at ${place.phone}` : ''
+          }.`,
+        },
       ])
     }
   }
 
-  // === FOLLOW-UPS helpers ===
+  // follow-ups helpers
   function addTask(t: Partial<Task>) {
     const task: Task = {
       id: uid('t'),
@@ -585,33 +996,78 @@ export default function IntakePage() {
       done: false,
       createdAt: Date.now(),
     }
-    setTasks((prev) => [task, ...prev])
+    setTasks(prev => [task, ...prev])
     setShowTasks(true)
   }
 
   function addPlaceFollowUp(p: Place) {
     addTask({
       title: `Call ${p.name} for availability/ETA and cost`,
-      notes: [p.phone ? `Phone: ${p.phone}` : '', p.address || '', p.url ? `Website: ${p.url}` : ''].filter(Boolean).join(' \n'),
+      notes: [p.phone ? `Phone: ${p.phone}` : '', p.address || '', p.url ? `Website: ${p.url}` : '']
+        .filter(Boolean)
+        .join(' \n'),
       linkedPlaceId: p.id,
     })
   }
   function addInsightFollowUps(card: InsightCard) {
     const next = card.next || []
-    if (next.length === 0) return addTask({ title: `Follow up on: ${card.title}`, linkedInsightId: card.id })
-    // Batch into one to avoid spamming
-    addTask({ title: `Next steps — ${card.title}`, notes: next.map((n) => `• ${n}`).join('\n'), linkedInsightId: card.id })
+    if (next.length === 0)
+      return addTask({ title: `Follow up on: ${card.title}`, linkedInsightId: card.id })
+    addTask({
+      title: `Next steps — ${card.title}`,
+      notes: next.map(n => `• ${n}`).join('\n'),
+      linkedInsightId: card.id,
+    })
   }
-  function toggleTaskDone(id: string) { setTasks((prev) => prev.map(t => t.id === id ? { ...t, done: !t.done } : t)) }
-  function deleteTask(id: string) { setTasks((prev) => prev.filter(t => t.id !== id)) }
-  function updateTaskDue(id: string, due?: string) { setTasks(prev => prev.map(t => t.id === id ? { ...t, due } : t)) }
+  function toggleTaskDone(id: string) {
+    setTasks(prev => prev.map(t => (t.id === id ? { ...t, done: !t.done } : t)))
+  }
+  function deleteTask(id: string) {
+    setTasks(prev => prev.filter(t => t.id !== id))
+  }
+  function updateTaskDue(id: string, due?: string) {
+    setTasks(prev => prev.map(t => (t.id === id ? { ...t, due } : t)))
+  }
 
-  /* === Places derived (review-gated) === */
-  const rankedPlaces = useMemo(() => rankPlaces(reviewedPlaces), [reviewedPlaces])
-  const top3 = rankedPlaces.slice(0, 3)
-  const nearest10 = [...rankedPlaces].slice(0, 10)
+  // Auto-create self-care follow-ups from insights
+  function maybeAutoTaskFromInsight(card: InsightCard) {
+    if (!card.id) return
+    const seen = autoTaskedRef.current
+    if (seen.has(card.id)) return
 
-  // Helper: pick next 1–2 unasked questions to reduce repetition
+    const joined = (card.next || []).join(' ').toLowerCase()
+    const selfCare =
+      joined.includes('tylenol') ||
+      joined.includes('acetaminophen') ||
+      joined.includes('ibuprofen') ||
+      joined.includes('rest') ||
+      joined.includes('ice') ||
+      joined.includes('elevation') ||
+      joined.includes('compression')
+
+    if (!selfCare) return
+    seen.add(card.id)
+
+    const title = card.title ? `Self-care: ${card.title}` : 'Self-care plan'
+    const notes = (card.next || []).length
+      ? (card.next || []).map(n => `• ${n}`).join('\n')
+      : undefined
+
+    setTasks(prev => [
+      {
+        id: uid('t'),
+        title,
+        due: undefined,
+        notes,
+        linkedInsightId: card.id,
+        done: false,
+        createdAt: Date.now(),
+      },
+      ...prev,
+    ])
+  }
+
+  // Helper currently unused (kept for possible future auto-question flow)
   function pickNextQuestions(n = 2): string[] {
     const asked = askedRef.current
     const remaining = QUESTION_BANK.filter(q => !asked.has(q.key))
@@ -643,15 +1099,17 @@ export default function IntakePage() {
       id: uid(),
       role: 'user',
       text: textValue || (imageFile ? '[Image uploaded]' : ''),
-      attachments: imageFile ? [{ kind: 'image', name: imageFile.name, preview: imagePreview || undefined }] : undefined,
+      attachments: imageFile
+        ? [{ kind: 'image', name: imageFile.name, preview: imagePreview || undefined }]
+        : undefined,
     }
-    setMessages((m) => [...m, userMsg])
+    setMessages(m => [...m, userMsg])
     if (textOverride === undefined) setDraft('')
     setSending(true)
     setGateMsg(null)
 
     const aId = uid()
-    setMessages((m) => [...m, { id: aId, role: 'assistant', text: '' }])
+    setMessages(m => [...m, { id: aId, role: 'assistant', text: '' }])
 
     let imageBase64: string | undefined
     if (imageFile && imagePreview && imageConsent) {
@@ -662,11 +1120,11 @@ export default function IntakePage() {
     }
 
     try {
-      const payloadMessages = [
+      const payloadMessages: any[] = [
         { role: 'system', content: TRIAGE_SYSTEM_PROMPT },
-        ...messages.map((x) => ({ role: x.role, content: x.text })),
+        ...messages.map(x => ({ role: x.role, content: x.text })),
         { role: 'user', content: userMsg.text },
-      ] as any
+      ]
       if (zip.trim()) payloadMessages.push({ role: 'user', content: `ZIP: ${zip.trim()}` })
 
       const r = await fetch('/api/no-trek/chat', {
@@ -688,60 +1146,80 @@ export default function IntakePage() {
 
       const data: ChatResponse = await r.json()
 
+      // Try to use citations from the model
       let finalCites = filterAllowed(data.citations)
-      if (finalCites.length === 0) {
-        finalCites = await backfillCitations(data.text || '')
-      }
 
+      // If we require hard evidence and the answer is declarative but missing citations,
+      // try to backfill WITHOUT blocking the reply.
       if (hardEvidence && isDeclarative(data.text) && finalCites.length === 0) {
-        const qs = pickNextQuestions(2)
-        const gatherText = `I want to cite this properly. Quick details:\n• ${qs.join('\n• ')}`
-        setMessages((m) => m.map((mm) => (mm.id === aId ? { ...mm, text: gatherText } : mm)))
-        setGateMsg('Collecting details — I’ll synthesize with citations after we have enough signal.')
-        setSending(false)
-        return
+        const backfilled = await backfillCitations(data.text || '')
+        if (backfilled.length) {
+          finalCites = backfilled
+        } else {
+          // Non-blocking warning instead of prereq questions
+          setGateMsg(
+            'Some of this answer may not be fully citation-backed yet — treat it as educational, not a diagnosis.',
+          )
+        }
       }
 
       if (finalCites.length > 0) {
-        setMessages((m) => m.map((mm) => (mm.id === aId ? { ...mm, citations: finalCites } : mm)))
+        setMessages(m =>
+          m.map(mm => (mm.id === aId ? { ...mm, citations: finalCites } : mm)),
+        )
       } else if (isDeclarative(data.text)) {
-        setMessages((m) => m.map((mm) => (mm.id === aId ? { ...mm, citations: [] } : mm)))
-      }
-
-      if (Array.isArray(data.refImages) && data.refImages.length > 0) {
-        setMessages((m) =>
-          m.map((mm) => (mm.id === aId ? { ...mm, refImages: data.refImages!.slice(0, 3) } : mm))
+        setMessages(m =>
+          m.map(mm => (mm.id === aId ? { ...mm, citations: [] } : mm)),
         )
       }
 
+      // Reference images
+      if (Array.isArray(data.refImages) && data.refImages.length > 0) {
+        setMessages(m =>
+          m.map(mm =>
+            mm.id === aId ? { ...mm, refImages: data.refImages!.slice(0, 3) } : mm,
+          ),
+        )
+      }
+
+      // Always show Stella's answer
       await typeFull(aId, data.text || '')
 
-      if (data.risk) {
-        setRisk((prev) => {
-          const next = data.risk!
-          setRiskTrail((t) => (t.length && t[t.length - 1] === next ? t : [...t, next]))
+      // Risk tracking: combine model risk with heuristic
+      const heuristic = heuristicRiskFromText(userMsg.text || '')
+      if (data.risk || heuristic) {
+        setRisk(prev => {
+          let base: Risk = (data.risk as Risk) || prev
+          if (heuristic) base = maxRisk(base, heuristic)
+          const next = base
+          setRiskTrail(t => (t.length && t[t.length - 1] === next ? t : [...t, next]))
           return next
         })
       }
 
+      // Insights
       if (Array.isArray(data.insights)) {
-        const cleaned = data.insights.map((c) => ({
+        const cleaned = data.insights.map(c => ({
           ...c,
           citations: filterAllowed(c.citations),
           at: c.at || Date.now(),
         }))
-        setInsights((prev) => mergeInsights(prev, cleaned))
+        setInsights(prev => mergeInsights(prev, cleaned))
+        cleaned.forEach(card => maybeAutoTaskFromInsight(card))
       }
 
+      // Places
       if (Array.isArray(data.places)) {
         setPlaces(data.places)
-      } else {
-        if (debug) {
-          setMessages((m) => [
-            ...m,
-            { id: uid(), role: 'assistant', text: 'No places[] returned by API. Cards depend on places[].' },
-          ])
-        }
+      } else if (debug) {
+        setMessages(m => [
+          ...m,
+          {
+            id: uid(),
+            role: 'assistant',
+            text: 'No places[] returned by API. Cards depend on places[].',
+          },
+        ])
       }
     } catch (e: any) {
       await typeFull(aId, `I couldn’t reach the medical engine. (${String(e?.message || e)})`)
@@ -751,15 +1229,57 @@ export default function IntakePage() {
   }
 
   function typeInto(id: string, chunk: string) {
-    setMessages((m) => m.map((mm) => (mm.id === id ? { ...mm, text: (mm.text || '') + chunk } : mm)))
+    setMessages(m =>
+      m.map(mm => (mm.id === id ? { ...mm, text: (mm.text || '') + chunk } : mm)),
+    )
   }
   async function typeFull(id: string, full: string) {
     if (!full) return
     const step = 16
     for (let i = 0; i < full.length; i += step) {
       typeInto(id, full.slice(i, i + step))
-      await new Promise((r) => setTimeout(r, 10))
+      await new Promise(r => setTimeout(r, 10))
     }
+  }
+
+  // Build payload for Tasks page
+  function buildTasksPayload() {
+    return {
+      from: 'intake',
+      createdAt: new Date().toISOString(),
+      risk,
+      riskTrail,
+      insights,
+      places: rankedPlaces.slice(0, 10),
+      tasks: tasks.map(t => ({
+        id: t.id,
+        title: t.title,
+        status: t.done ? 'done' : 'todo',
+        dueAt: t.due ?? null,
+        notes: t.notes,
+        linkedPlaceId: t.linkedPlaceId,
+        linkedInsightId: t.linkedInsightId,
+      })),
+    }
+  }
+
+  // Export care map for Tasks
+  function exportForTasks() {
+    const payload = buildTasksPayload()
+    try {
+      localStorage.setItem('nt_intake_to_tasks_v1', JSON.stringify(payload))
+    } catch {
+      // ignore
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `no-trek-care-plan-${new Date().toISOString().slice(0, 19)}.json`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
   }
 
   function exportTxt() {
@@ -768,26 +1288,32 @@ export default function IntakePage() {
     lines.push(`Risk: ${risk}  |  Trail: ${riskTrail.join(' → ')}`)
     if (zip.trim()) lines.push(`ZIP: ${zip.trim()}`)
     lines.push('')
-    messages.forEach((m) => {
+    messages.forEach(m => {
       lines.push(`${m.role.toUpperCase()}: ${m.text}`)
       if (m.refImages?.length) {
-        m.refImages.forEach((ri) => lines.push(`  [ref] ${ri.title || ri.url} — ${ri.url}`))
+        m.refImages.forEach(ri => lines.push(`  [ref] ${ri.title || ri.url} — ${ri.url}`))
       }
     })
     if (insights.length) {
       lines.push('')
       lines.push('INSIGHTS:')
-      insights.forEach((i) => lines.push(`- ${i.title}: ${i.body}`))
+      insights.forEach(i => lines.push(`- ${i.title}: ${i.body}`))
     }
     if (sessionSources.length) {
       lines.push('')
       lines.push('SOURCES:')
-      sessionSources.forEach((s) => lines.push(`- ${s.title || s.url}  ${s.url}`))
+      sessionSources.forEach(s => lines.push(`- ${s.title || s.url}  ${s.url}`))
     }
     if (tasks.length) {
       lines.push('')
       lines.push('FOLLOW-UPS:')
-      tasks.forEach((t) => lines.push(`- [${t.done ? 'x' : ' '}] ${t.title}${t.due ? ` (due ${new Date(t.due).toLocaleString()})` : ''}`))
+      tasks.forEach(t =>
+        lines.push(
+          `- [${t.done ? 'x' : ' '}] ${t.title}${
+            t.due ? ` (due ${new Date(t.due).toLocaleString()})` : ''
+          }`,
+        ),
+      )
     }
     const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
     const url = URL.createObjectURL(blob)
@@ -806,7 +1332,7 @@ export default function IntakePage() {
         id: uid(),
         role: 'assistant',
         text:
-          'Hi — I’m Stella, No Trek’s virtual helper. I’ll ask focused medical questions, cite trusted sources, and surface nearby care and costs. What’s going on today?',
+          'Hi — I’m Stella, No Trek’s medical AI concierge. Start wherever you are — a new symptom, a long-term worry, or “is this worth a visit?”. I’ll listen first, then bring in medical detail, citations, and nearby options.',
       },
     ])
     setRisk('low')
@@ -817,130 +1343,256 @@ export default function IntakePage() {
     setImagePreview(null)
     setImageConsent(false)
     askedRef.current = new Set()
+    autoTaskedRef.current = new Set()
+    setTasks([])
+    setStage('intake')
   }
   function deleteData() {
     localStorage.removeItem('nt_intake_session_v1')
+    localStorage.removeItem('nt_intake_tasks_v1')
+    localStorage.removeItem('nt_intake_to_tasks_v1')
     resetSession()
   }
 
-  const engaged = messages.some((m) => m.role === 'user') || insights.length > 0 || places.length > 0
-  const readyInsightCount = (evidenceLock ? insights.filter((i) => (i.citations || []).length > 0) : insights).length
+  const engaged =
+    messages.some(m => m.role === 'user') ||
+    insights.length > 0 ||
+    places.length > 0
+  const readyInsightCount = (evidenceLock ? insights.filter(i => (i.citations || []).length > 0) : insights).length
   const showRightRail = engaged
   const cardsActive = readyInsightCount > 0 || rankedPlaces.length > 0
 
   const openTasks = tasks.filter(t => !t.done).length
   const hasAssess = readyInsightCount > 0
-  const hasSite = rankedPlaces.length > 0
-  const hasPrice = rankedPlaces.some(p => typeof p.distance_km === 'number' || typeof p.est_cost_min === 'number' || typeof p.est_cost_max === 'number')
+  const hasSite = rankedPlaces.length > 0 || risk !== 'low'
+  const hasPrice = rankedPlaces.some(
+    p =>
+      typeof p.distance_km === 'number' ||
+      typeof p.est_cost_min === 'number' ||
+      typeof p.est_cost_max === 'number',
+  )
   const bookingState = callViz.status
+
+  // Episode engine
+  useEffect(() => {
+    setStage(prev => {
+      if (!engaged) return 'intake'
+      const hasInsights = readyInsightCount > 0
+      const hasPlaces = rankedPlaces.length > 0
+      const hasFollowUps = tasks.length > 0
+      const allDone = hasFollowUps && tasks.every(t => t.done)
+
+      if (!hasInsights) return 'triage'
+      if (hasInsights && !hasFollowUps && !hasPlaces) return 'plan'
+      if ((hasFollowUps || hasPlaces) && !allDone) return 'actions'
+      if (allDone) return 'wrap'
+      return prev
+    })
+  }, [engaged, readyInsightCount, rankedPlaces.length, tasks])
 
   return (
     <main
-      className="relative min-h-dvh text-white"
-      style={{
-        ['--brand-blue' as any]: BRAND_BLUE,
-        ['--nt-accent' as any]: accent,
-        ['--nt-outline' as any]: outline,
-        ['--nt-glow' as any]: glow,
-      } as CSSProperties}
+      className="relative min-h-dvh overflow-hidden bg-slate-950 text-slate-50"
+      style={
+        {
+          ['--brand-blue' as any]: BRAND_BLUE,
+          ['--nt-accent' as any]: accent,
+          ['--nt-outline' as any]: outline,
+          ['--nt-glow' as any]: glow,
+        } as CSSProperties
+      }
     >
       <BreathingBackground risk={risk} />
       {showSplash && <SplashIntro onDone={() => setShowSplash(false)} />}
 
-      <div className="relative z-10 mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-10">
+      <div className="relative z-10 mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
         {/* Top bar */}
-        {engaged && (
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="text-2xl sm:text-3xl font-extrabold tracking-tight italic">No Trek — Intake</div>
-              <div className="text-xs text-white/70 hidden sm:block">Evidence-linked guidance. Nearby options when helpful.</div>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="grid h-9 w-9 place-items-center rounded-full bg-white shadow-sm">
+              <span className="text-xs font-extrabold tracking-tight text-[#0E5BD8]">NT</span>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="pill flex flex-wrap items-center gap-2 px-2 py-1">
-                <label className="inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs text-white/85">
-                  <input type="checkbox" checked={evidenceLock} onChange={(e) => setEvidenceLock(e.target.checked)} className="h-3.5 w-3.5 bg-transparent" />
-                  Evidence lock
-                </label>
-                <label className="inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs text-white/85">
-                  <input type="checkbox" checked={hardEvidence} onChange={(e) => setHardEvidence(e.target.checked)} className="h-3.5 w-3.5 bg-transparent" />
-                  Require citations to reply
-                </label>
-                <label className="inline-flex items-center gap-2 rounded-full px-2.5 py-1 text-xs text-white/85" title="Show places even if reviews are missing">
-                  <input type="checkbox" checked={showUnverified} onChange={(e) => setShowUnverified(e.target.checked)} className="h-3.5 w-3.5 bg-transparent" />
-                  Show unverified options
-                </label>
-                <button onClick={() => setShowSources(true)} className="rounded-full px-3 py-1 text-xs text-white/85 hover:bg-white/10">Sources ({sessionSources.length})</button>
-                <button onClick={exportTxt} className="rounded-full px-3 py-1 text-xs text-white/85 hover:bg-white/10">Export .txt</button>
-                <button onClick={() => setShowTasks(true)} className="rounded-full px-3 py-1 text-xs text-white/85 hover:bg-white/10">Follow-ups ({openTasks})</button>
-                <button onClick={resetSession} className="rounded-full px-3 py-1 text-xs text-white/85 hover:bg-white/10">Reset</button>
-                <button onClick={deleteData} className="rounded-full px-3 py-1 text-xs text-white/85 hover:bg-white/10" title="Delete local session data & images">Delete my data</button>
-              </div>
-              <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-white/30 bg-white/5 px-3 py-1 backdrop-blur">
-                <span className={cx('h-2 w-2 rounded-full', connected ? 'bg-emerald-400' : connected === false ? 'bg-rose-400' : 'bg-zinc-400')} />
-                <span className="text-xs text-white/80">{connected === null ? 'Checking' : connected ? 'Connected to AI' : 'Base engine'}</span>
-              </div>
-              {debug && (
-                <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-white/30 bg-white/5 px-3 py-1 text-[11px] text-white/80">
-                  debug: places {places.length} → reviewed {reviewedPlaces.length} → ranked {rankedPlaces.length}
-                </div>
-              )}
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-200/80">
+                No Trek
+              </p>
+              <h1 className="text-xl font-semibold tracking-tight text-slate-50 sm:text-2xl">
+                Intake with Stella
+              </h1>
+              <p className="text-xs text-slate-200/80 sm:text-[13px]">
+                Talk to Stella like you&apos;re texting a nurse friend with a supercomputer
+                behind her. No forms or prerequisites — we listen first, then bring in
+                medical detail, risk, and nearby options.
+              </p>
             </div>
           </div>
-        )}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-500/60 bg-slate-900/80 px-3 py-1 text-xs text-slate-100 backdrop-blur">
+              <span
+                className={cx(
+                  'h-2 w-2 rounded-full',
+                  connected
+                    ? 'bg-emerald-400'
+                    : connected === false
+                    ? 'bg-rose-400'
+                    : 'bg-slate-400',
+                )}
+              />
+              <span>
+                {connected === null ? 'Checking' : connected ? 'Connected to Stella' : 'Base engine'}
+              </span>
+            </div>
+            {debug && (
+              <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-500/60 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-100">
+                debug: places {places.length} → reviewed {reviewedPlaces.length} → ranked{' '}
+                {rankedPlaces.length}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Controls row */}
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <div className="pill inline-flex flex-wrap items-center gap-2 rounded-full border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 backdrop-blur">
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={evidenceLock}
+                onChange={e => setEvidenceLock(e.target.checked)}
+                className="h-3.5 w-3.5 bg-transparent"
+              />
+              Evidence lock
+            </label>
+            <label className="inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={hardEvidence}
+                onChange={e => setHardEvidence(e.target.checked)}
+                className="h-3.5 w-3.5 bg-transparent"
+              />
+              Prefer citations (warn if missing)
+            </label>
+            <label
+              className="inline-flex items-center gap-2"
+              title="Show places even if reviews are missing"
+            >
+              <input
+                type="checkbox"
+                checked={showUnverified}
+                onChange={e => setShowUnverified(e.target.checked)}
+                className="h-3.5 w-3.5 bg-transparent"
+              />
+              Show unverified options
+            </label>
+            <button
+              onClick={() => setShowSources(true)}
+              className="rounded-full px-3 py-1 hover:bg-slate-800/80"
+            >
+              Sources ({sessionSources.length})
+            </button>
+            <button
+              onClick={exportTxt}
+              className="rounded-full px-3 py-1 hover:bg-slate-800/80"
+            >
+              Export .txt
+            </button>
+            <button
+              onClick={exportForTasks}
+              disabled={tasks.length === 0}
+              className="rounded-full px-3 py-1 disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-800/80"
+            >
+              Send to Tasks
+            </button>
+            <button
+              onClick={() => setShowTasks(true)}
+              className="rounded-full px-3 py-1 hover:bg-slate-800/80"
+            >
+              Follow-ups ({openTasks})
+            </button>
+            <button
+              onClick={resetSession}
+              className="rounded-full px-3 py-1 hover:bg-slate-800/80"
+            >
+              Reset
+            </button>
+            <button
+              onClick={deleteData}
+              className="rounded-full px-3 py-1 hover:bg-slate-800/80"
+              title="Delete local session data & images"
+            >
+              Delete my data
+            </button>
+          </div>
+        </div>
 
         {/* ZIP chip */}
-        {engaged && (
-          <div className="mt-4">
-            <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-white/30 bg-white/[0.06] backdrop-blur px-3 py-1.5">
-              <span className="text-xs text-white/75">ZIP (for nearby results):</span>
-              <input
-                value={zip}
-                onChange={(e) => setZip(e.target.value.replace(/[^\d-]/g, '').slice(0, 10))}
-                placeholder="e.g., 10001"
-                className="w-24 bg-transparent text-sm text-white/90 outline-none placeholder:text-white/40"
-                inputMode="numeric"
-                aria-label="ZIP code for nearby results"
-              />
-            </div>
+        <div className="mt-4">
+          <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 backdrop-blur">
+            <span>ZIP (for nearby results):</span>
+            <input
+              value={zip}
+              onChange={e => setZip(e.target.value.replace(/[^\d-]/g, '').slice(0, 10))}
+              placeholder="e.g., 10001"
+              className="w-24 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-400"
+              inputMode="numeric"
+              aria-label="ZIP code for nearby results"
+            />
           </div>
-        )}
+        </div>
 
         {/* Layout */}
         <div
           className={cx('mt-6 grid gap-6', showRightRail ? '' : 'flex justify-center')}
-          style={showRightRail ? ({ gridTemplateColumns: 'minmax(760px,1.45fr) 400px' } as CSSProperties) : ({} as CSSProperties)}
+          style={
+            showRightRail
+              ? ({ gridTemplateColumns: 'minmax(760px,1.45fr) 400px' } as CSSProperties)
+              : ({} as CSSProperties)
+          }
         >
           {/* Chat */}
           <section
-            className={cx('rounded-[22px] bg-white/[0.04] backdrop-blur p-4 sm:p-5 w-full relative overflow-hidden border-[2px] border-white/20', showRightRail ? '' : 'max-w-5xl')}
+            className={cx(
+              'relative w-full overflow-hidden rounded-[22px] border-[2px] border-slate-700/70 bg-slate-900/80 p-4 shadow-[0_0_26px_rgba(15,23,42,0.9)] backdrop-blur',
+              showRightRail ? '' : 'max-w-5xl',
+            )}
             aria-label="No Trek chat"
           >
             <div className="flex items-center justify-between px-1">
               {engaged && <RiskBadge risk={risk} />}
-              <span className="text-[11px] text-white/70">Educational support — not a diagnosis</span>
+              <span className="text-[11px] text-slate-300/90">
+                Educational support — not a diagnosis
+              </span>
             </div>
 
             {/* Living Care Map */}
-            {engaged && (
-              <div className="mt-3">
-                <LivingCareMap
-                  risk={risk}
-                  hasAssess={hasAssess}
-                  hasSite={hasSite}
-                  hasPrice={hasPrice}
-                  bookingState={bookingState}
-                />
-              </div>
-            )}
+            <div className="mt-3">
+              <LivingCareMap
+                risk={risk}
+                hasAssess={hasAssess}
+                hasSite={hasSite}
+                hasPrice={hasPrice}
+                bookingState={bookingState}
+                stage={stage}
+                openTasks={openTasks}
+                totalTasks={tasks.length}
+              />
+            </div>
 
             {risk === 'severe' && (
               <div className="mt-3 rounded-xl border-[2px] border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-                Severe symptoms may require urgent evaluation. If you have life-threatening symptoms, call your local emergency number now.
+                Severe symptoms may require urgent evaluation. If you have life-threatening
+                symptoms, call your local emergency number now.
               </div>
             )}
 
-            <div ref={chatRef} className={cx(!engaged ? 'h-[72vh] sm:h-[74vh]' : 'h-[62vh]', 'mt-3 overflow-y-auto space-y-3 pr-1')}>
-              {messages.map((m) => (
+            <div
+              ref={chatRef}
+              className={cx(
+                engaged ? 'h-[62vh]' : 'h-[72vh] sm:h-[74vh]',
+                'mt-3 space-y-3 overflow-y-auto pr-1',
+              )}
+            >
+              {messages.map(m => (
                 <div key={m.id} className="group">
                   <ChatBubble msg={m} />
                   {m.refImages?.length ? <RefImageStrip images={m.refImages} /> : null}
@@ -949,7 +1601,11 @@ export default function IntakePage() {
               {sending && <TypingDots />}
               <div ref={endRef} />
               {showScrollBtn && (
-                <button onClick={scrollToBottom} className="absolute right-3 bottom-3 rounded-full pill px-3 py-1.5 text-xs text-white/90 hover:bg-white/10" title="Jump to latest">
+                <button
+                  onClick={scrollToBottom}
+                  className="pill absolute bottom-3 right-3 rounded-full bg-slate-900/90 px-3 py-1.5 text-xs text-slate-100 shadow hover:bg-slate-800"
+                  title="Jump to latest"
+                >
                   Jump to latest ⤵
                 </button>
               )}
@@ -958,27 +1614,53 @@ export default function IntakePage() {
             <GateBanner msg={gateMsg} onClose={() => setGateMsg(null)} />
 
             {/* Composer */}
-            <div className="mt-3 border-t border-white/20 pt-3">
+            <div className="mt-3 border-t border-slate-700/80 pt-3">
               <form
-                onSubmit={(e) => { e.preventDefault(); handleSend() }}
+                onSubmit={e => {
+                  e.preventDefault()
+                  handleSend()
+                }}
                 className="flex items-end gap-2"
                 aria-label="Chat composer"
               >
                 {/* (+) picker */}
                 <label className="relative inline-flex h-12">
-                  <input type="file" accept="image/png,image/jpeg,image/webp" className="absolute inset-0 opacity-0 cursor-pointer" onChange={(e) => onPickImage(e.target.files?.[0] || null)} aria-label="Upload image" />
-                  <span className="inline-flex h-12 items-center gap-2 rounded-xl border-[2px] border-white/30 bg-white/5 px-3 text-sm text-white/85 hover:bg-white/10">
-                    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden className="opacity-90">
-                      <path fill="currentColor" d="M12 2a10 10 0 1 0 .001 20.001A10 10 0 0 0 12 2Zm1 5v4h4v2h-4v4h-2v-4H7V11h4V7h2Z"/>
+                  <input
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    className="absolute inset-0 cursor-pointer opacity-0"
+                    onChange={e => onPickImage(e.target.files?.[0] || null)}
+                    aria-label="Upload image"
+                  />
+                  <span className="inline-flex h-12 items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 text-sm text-slate-100 hover:bg-slate-800/90">
+                    <svg
+                      width="18"
+                      height="18"
+                      viewBox="0 0 24 24"
+                      aria-hidden
+                      className="opacity-90"
+                    >
+                      <path
+                        fill="currentColor"
+                        d="M12 2a10 10 0 1 0 .001 20.001A10 10 0 0 0 12 2Zm1 5v4h4v2h-4v4h-2v-4H7V11h4V7h2Z"
+                      />
                     </svg>
-                    {imageFile ? <span className="max-w-[12rem] truncate">{imageFile.name}</span> : 'Add'}
+                    {imageFile ? (
+                      <span className="max-w-[12rem] truncate">{imageFile.name}</span>
+                    ) : (
+                      'Add'
+                    )}
                   </span>
                 </label>
 
                 {imagePreview && (
-                  <div className="h-12 w-16 overflow-hidden rounded-lg border-[2px] border-white/30 bg-black/20">
+                  <div className="h-12 w-16 overflow-hidden rounded-lg border-[2px] border-slate-600/80 bg-black/20">
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={imagePreview} alt="preview" className="h-full w-full object-cover" />
+                    <img
+                      src={imagePreview}
+                      alt="preview"
+                      className="h-full w-full object-cover"
+                    />
                   </div>
                 )}
 
@@ -986,33 +1668,78 @@ export default function IntakePage() {
                   <textarea
                     ref={textRef}
                     value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    placeholder="Describe what happened or ask a question…"
+                    onChange={e => setDraft(e.target.value)}
+                    placeholder="Tell Stella what you’re worried about, in your own words… or just ask “is this worth a visit?”"
                     rows={1}
-                    onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend() } }}
-                    className="w-full min-h-[46px] h-12 resize-none rounded-3xl bg-white/10 px-4 py-3 pr-16 text-[15px] leading-6 text-white placeholder:text-white/45 focus:outline-none"
+                    onKeyDown={e => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        handleSend()
+                      }
+                    }}
+                    className="h-12 min-h-[46px] w-full resize-none rounded-3xl border border-slate-600/80 bg-slate-900/80 px-4 py-3 pr-16 text-[15px] leading-6 text-slate-50 placeholder:text-slate-400 outline-none focus:border-slate-300"
                   />
+                  {/* Vertically-centered send button, no font download needed */}
                   <button
                     type="submit"
                     aria-label="Send message"
                     disabled={sending || (!draft.trim() && !(imageFile && imageConsent))}
-                    className={cx('absolute right-2 bottom-1.5 grid h-10 w-10 place-items-center rounded-full transition-transform hover:scale-[1.03]', sending ? 'opacity-60' : '')}
-                    style={{ background: BRAND_BLUE }}
+                    className={cx(
+                      'absolute right-1.5 top-6 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full shadow-[0_0_40px_rgba(56,189,248,0.4)] transition-transform hover:scale-[1.03]',
+                      sending ? 'cursor-default opacity-60' : 'cursor-pointer',
+                    )}
+                    style={{
+                      backgroundImage:
+                        'linear-gradient(135deg, rgba(56,189,248,1), rgba(59,130,246,1))',
+                    }}
                   >
-                    <span className="text-[12px] tracking-widest text-white">NT</span>
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-950">
+                      Send
+                    </span>
                   </button>
                 </div>
               </form>
 
               {imagePreview && (
-                <label className="mt-2 flex items-center gap-2 text-xs text-white/75">
-                  <input type="checkbox" className="h-3.5 w-3.5 rounded border-white/30 bg-transparent" checked={imageConsent} onChange={(e) => setImageConsent(e.target.checked)} />
+                <label className="mt-2 flex items-center gap-2 text-xs text-slate-200/90">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 rounded border-slate-600/80 bg-transparent"
+                    checked={imageConsent}
+                    onChange={e => setImageConsent(e.target.checked)}
+                  />
                   Use this image for this session only.
                 </label>
               )}
+
+              {/* Guided quick prompts — optional, not prerequisites */}
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-200/90">
+                <span>If it&apos;s easier, tap one:</span>
+                {[
+                  'Help me figure out how urgent this might be.',
+                  'I’m not sure if this is home-care or clinic-level.',
+                  'I care about cost and wait time as much as safety.',
+                  'I’ve been dealing with this for a while — is that a problem?',
+                ].map(label => (
+                  <button
+                    key={label}
+                    type="button"
+                    onClick={() => handleSend(label)}
+                    className="rounded-full border border-slate-600/80 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-100 hover:bg-slate-800/90"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <SessionFile messages={messages} insights={insights} top3={top3} onCall={() => requestAICall(top3[0])} />
+            <SessionFile
+              messages={messages}
+              insights={insights}
+              top3={top3}
+              onCall={() => requestAICall(top3[0])}
+              onExportPlan={exportForTasks}
+            />
 
             {callViz.status !== 'idle' && (
               <LiveCallBubble
@@ -1026,14 +1753,52 @@ export default function IntakePage() {
 
           {/* Right rail */}
           {showRightRail && (
-            <aside className="space-y-4 lg:sticky lg:top-8 self-start">
+            <aside className="self-start space-y-4 lg:sticky lg:top-8">
               {cardsActive ? (
                 <>
-                  {(evidenceLock ? insights.filter((i) => (i.citations || []).length > 0) : insights).map((c, i) => (
+                  {/* Clinics / care sites up top */}
+                  {top3.length > 0 && (
+                    <div
+                      className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-950/95 p-5 backdrop-blur"
+                      style={{
+                        animation: `floatInRight ${CARD_DURATION_MS}ms ease-out both`,
+                        animationDelay: `0ms`,
+                      }}
+                    >
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="font-medium text-slate-50">
+                            Stella&apos;s clinic picks
+                          </h3>
+                          <p className="mt-0.5 text-[11px] text-slate-300/90">
+                            Ranked by No Trek score (reviews, distance, affordability).
+                          </p>
+                        </div>
+                        <span className="text-xs text-slate-300/90">Top 3</span>
+                      </div>
+                      <div className="mt-3 space-y-3">
+                        {top3.map(p => (
+                          <PlaceRow
+                            key={p.id}
+                            p={p}
+                            onOpen={() => openPlace(p)}
+                            onCall={() => requestAICall(p)}
+                            onFollowUp={() => addPlaceFollowUp(p)}
+                            showWhy
+                          />
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {(evidenceLock
+                    ? insights.filter(i => (i.citations || []).length > 0)
+                    : insights
+                  ).map((c, i) => (
                     <InsightTriad
                       key={`${c.id}-${i}`}
                       card={c}
-                      delay={i * CARD_STAGGER_MS}
+                      delay={(i + 1) * CARD_STAGGER_MS}
                       durationMs={CARD_DURATION_MS}
                       onAICall={() => requestAICall(top3[0])}
                       onExpand={() => setFullCard(c)}
@@ -1041,46 +1806,52 @@ export default function IntakePage() {
                     />
                   ))}
 
-                  {top3.length > 0 && (
-                    <div className="hover-card rounded-[22px] bg-white/[0.04] backdrop-blur p-5 border-[2px] border-white/20" style={{ animation: `floatInRight ${CARD_DURATION_MS}ms ease-out both`, animationDelay: `${(insights.length + 1) * CARD_STAGGER_MS}ms` }}>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h3 className="text-white/90 font-medium">No Trek recommends</h3>
-                          <p className="text-[11px] text-white/65 mt-0.5">Verified reviews, distance, affordability.</p>
-                        </div>
-                        <span className="text-xs text-white/70">Top 3</span>
-                      </div>
-                      <div className="mt-3 space-y-3">
-                        {top3.map((p) => (
-                          <PlaceRow key={p.id} p={p} onOpen={() => openPlace(p)} onCall={() => requestAICall(p)} onFollowUp={() => addPlaceFollowUp(p)} showWhy />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
                   {nearest10.length > 0 && (
-                    <div className="hover-card rounded-[22px] bg-white/[0.04] backdrop-blur p-5 border-[2px] border-white/20" style={{ animation: `floatInRight ${CARD_DURATION_MS}ms ease-out both`, animationDelay: `${(insights.length + 2) * CARD_STAGGER_MS}ms` }}>
+                    <div
+                      className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-950/95 p-5 backdrop-blur"
+                      style={{
+                        animation: `floatInRight ${CARD_DURATION_MS}ms ease-out both`,
+                        animationDelay: `${(insights.length + 2) * CARD_STAGGER_MS}ms`,
+                      }}
+                    >
                       <div className="flex items-center justify-between">
                         <div>
-                          <h3 className="text-white/90 font-medium">Care options near you</h3>
-                          <p className="text-[11px] text-white/65 mt-0.5">Tap for breakdown and sources.</p>
+                          <h3 className="font-medium text-slate-50">More care options</h3>
+                          <p className="mt-0.5 text-[11px] text-slate-300/90">
+                            Tap for breakdown, citations, and directions.
+                          </p>
                         </div>
-                        <button onClick={() => setShowAllPlaces(true)} className="text-xs text-white/85 hover:underline">
+                        <button
+                          onClick={() => setShowAllPlaces(true)}
+                          className="text-xs text-slate-200 hover:underline"
+                        >
                           View all ({rankedPlaces.length})
                         </button>
                       </div>
                       <div className="mt-3 space-y-3">
-                        {nearest10.map((p) => (
-                          <PlaceRow key={p.id} p={p} onOpen={() => openPlace(p)} onCall={() => requestAICall(p)} onFollowUp={() => addPlaceFollowUp(p)} />
+                        {nearest10.map(p => (
+                          <PlaceRow
+                            key={p.id}
+                            p={p}
+                            onOpen={() => openPlace(p)}
+                            onCall={() => requestAICall(p)}
+                            onFollowUp={() => addPlaceFollowUp(p)}
+                          />
                         ))}
                       </div>
                     </div>
                   )}
 
                   {places.length > 0 && rankedPlaces.length === 0 && (
-                    <div className="rounded-[22px] bg-white/[0.04] backdrop-blur p-5 border-[2px] border-white/20">
-                      <h3 className="text-white/90 font-medium">No reviewed options yet</h3>
-                      <p className="text-sm text-white/75 mt-1">We hide locations without verifiable ratings or public reviews. Toggle “Show unverified options” above if you’d like to see everything the model returned.</p>
+                    <div className="rounded-[22px] border-[2px] border-slate-700/80 bg-slate-900/85 p-5 backdrop-blur">
+                      <h3 className="font-medium text-slate-50">
+                        No reviewed options yet
+                      </h3>
+                      <p className="mt-1 text-sm text-slate-200/90">
+                        We hide locations without verifiable ratings or public reviews. Toggle
+                        “Show unverified options” above if you’d like to see everything the
+                        model returned.
+                      </p>
                     </div>
                   )}
                 </>
@@ -1091,8 +1862,9 @@ export default function IntakePage() {
           )}
         </div>
 
-        <p className="mt-4 text-[11px] text-white/60">
-          No Trek is not a medical provider. This is educational support, not a diagnosis. If you have life-threatening symptoms, call your local emergency number.
+        <p className="mt-4 text-[11px] text-slate-400">
+          No Trek is not a medical provider. This is educational support, not a diagnosis. If
+          you have life-threatening symptoms, call your local emergency number.
         </p>
       </div>
 
@@ -1100,7 +1872,7 @@ export default function IntakePage() {
         <PlaceDrawer
           place={activePlace}
           fullscreen={placeFullscreen}
-          onToggleFullscreen={() => setPlaceFullscreen((v) => !v)}
+          onToggleFullscreen={() => setPlaceFullscreen(v => !v)}
           onClose={() => setActivePlace(null)}
           onCall={() => requestAICall(activePlace)}
           onFollowUp={() => addPlaceFollowUp(activePlace)}
@@ -1111,39 +1883,120 @@ export default function IntakePage() {
           places={rankedPlaces}
           onClose={() => setShowAllPlaces(false)}
           onOpenPlace={openPlace}
-          onCallPlace={(p) => requestAICall(p)}
-          onFollowUpPlace={(p) => addPlaceFollowUp(p)}
+          onCallPlace={p => requestAICall(p)}
+          onFollowUpPlace={p => addPlaceFollowUp(p)}
         />
       )}
-      {showSources && <SourcesPanel sources={sessionSources} onClose={() => setShowSources(false)} />}
-      {fullCard && <CardFullscreen card={fullCard} onClose={() => setFullCard(null)} onAddFollowUps={() => addInsightFollowUps(fullCard)} />}
+      {showSources && (
+        <SourcesPanel sources={sessionSources} onClose={() => setShowSources(false)} />
+      )}
+      {fullCard && (
+        <CardFullscreen
+          card={fullCard}
+          onClose={() => setFullCard(null)}
+          onAddFollowUps={() => addInsightFollowUps(fullCard)}
+        />
+      )}
       {showTasks && (
         <FollowUpsPanel
           tasks={tasks}
           places={places}
+          insights={insights}
           onClose={() => setShowTasks(false)}
           onToggleDone={toggleTaskDone}
           onDelete={deleteTask}
           onUpdateDue={updateTaskDue}
+          onOpenInsight={id => {
+            const card = insights.find(c => c.id === id)
+            if (card) {
+              setFullCard(card)
+              setShowTasks(false)
+            }
+          }}
         />
       )}
 
       <style jsx global>{`
-        :root { --brand-blue: ${BRAND_BLUE}; }
-        .pill { border: 2px solid rgba(255,255,255,.30); background: rgba(255,255,255,.06); backdrop-filter: blur(10px); border-radius: 9999px; }
-
-        .hover-card { transition: transform .22s ease, box-shadow .22s ease, border-color .22s ease; will-change: transform; }
-        .hover-card:hover { transform: translateY(-4px); box-shadow: 0 16px 36px rgba(20,60,180,.36), 0 1px 0 rgba(255,255,255,.08) inset; border-color: rgba(255,255,255,.32) !important; }
-
-        .bubble-stella::after { content:''; position:absolute; inset:-1px; border-radius:inherit; pointer-events:none; box-shadow: 0 0 0 2px var(--nt-outline), 0 0 24px var(--nt-glow); }
-
+        :root {
+          --brand-blue: ${BRAND_BLUE};
+        }
+        .pill {
+          border-radius: 9999px;
+        }
+        .hover-card {
+          transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+          will-change: transform;
+        }
+        .hover-card:hover {
+          transform: translateY(-4px);
+          box-shadow: 0 16px 36px rgba(20, 60, 180, 0.36),
+            0 1px 0 rgba(255, 255, 255, 0.08) inset;
+          border-color: rgba(148, 163, 184, 0.6) !important;
+        }
+        .bubble-stella::after {
+          content: '';
+          position: absolute;
+          inset: -1px;
+          border-radius: inherit;
+          pointer-events: none;
+          box-shadow: 0 0 0 2px var(--nt-outline), 0 0 24px var(--nt-glow);
+        }
         @media (prefers-reduced-motion: no-preference) {
-          @keyframes dots { 0% { opacity: .2; } 20% { opacity: 1; } 100% { opacity: .2; } }
-          @keyframes floatInRight { from { opacity: 0; transform: translateX(16px) scale(.985); } to { opacity: 1; transform: translateX(0) scale(1); } }
-          @keyframes sectionIn { 0% { opacity: 0; transform: translateY(4px); } 100% { opacity: 1; transform: translateY(0); } }
-          @keyframes softPulse { 0% { opacity:.20; transform:scale(1); } 50% { opacity:.30; transform:scale(1.02); } 100% { opacity:.20; transform:scale(1); } }
-          @keyframes nodePop { from { transform: scale(.92); opacity:.0; } to { transform: scale(1); opacity:1; } }
-          @keyframes lineGrow { from { width: 0; } to { width: 100%; } }
+          @keyframes dots {
+            0% {
+              opacity: 0.2;
+            }
+            20% {
+              opacity: 1;
+            }
+            100% {
+              opacity: 0.2;
+            }
+          }
+          @keyframes floatInRight {
+            from {
+              opacity: 0;
+              transform: translateX(16px) scale(0.985);
+            }
+            to {
+              opacity: 1;
+              transform: translateX(0) scale(1);
+            }
+          }
+          @keyframes sectionIn {
+            0% {
+              opacity: 0;
+              transform: translateY(4px);
+            }
+            100% {
+              opacity: 1;
+              transform: translateY(0);
+            }
+          }
+          @keyframes softPulse {
+            0% {
+              opacity: 0.2;
+              transform: scale(1);
+            }
+            50% {
+              opacity: 0.3;
+              transform: scale(1.02);
+            }
+            100% {
+              opacity: 0.2;
+              transform: scale(1);
+            }
+          }
+          @keyframes nodePop {
+            from {
+              transform: scale(0.92);
+              opacity: 0;
+            }
+            to {
+              transform: scale(1);
+              opacity: 1;
+            }
+          }
         }
       `}</style>
     </main>
@@ -1152,101 +2005,287 @@ export default function IntakePage() {
 
 /* ============================== Background ============================== */
 function BreathingBackground({ risk }: { risk: Risk }) {
-  const base = risk === 'severe'
-    ? 'linear-gradient(180deg, rgba(200,40,40,1) 0%, rgba(110,24,24,0.98) 60%)'
-    : risk === 'moderate'
-    ? 'linear-gradient(180deg, rgba(245,158,11,1) 0%, rgba(104,60,10,0.98) 60%)'
-    : 'linear-gradient(180deg, rgba(14,91,216,1) 0%, rgba(10,83,197,0.98) 60%)'
+  // Single dark-blue base; risk only tints the glow
+  const accent =
+    risk === 'severe'
+      ? 'rgba(248,113,113,0.70)'
+      : risk === 'moderate'
+      ? 'rgba(252,211,77,0.70)'
+      : 'rgba(56,189,248,0.70)'
+
   return (
     <div aria-hidden className="pointer-events-none absolute inset-0">
-      <div className="absolute inset-0 transition-[background] duration-500" style={{ background: base }} />
-      <div className="absolute inset-0" style={{ background: 'radial-gradient(800px 620px at 70% 18%, rgba(255,255,255,0.22), transparent 60%)', filter: 'blur(58px)', opacity: 0.24, animation: 'softPulse 10s ease-in-out infinite' }} />
-      <div className="absolute inset-0 bg-[radial-gradient(1000px_520px_at_center,transparent,rgba(0,0,0,0.18))]" />
+      {/* main gradient (fixed dark mode blue) */}
+      <div
+        className="absolute inset-0 transition-[background] duration-500"
+        style={{
+          background:
+            'radial-gradient(1200px 800px at 80% 0%, rgba(15,118,255,0.28), transparent 60%), linear-gradient(180deg, #020617 0%, #020617 45%, #020617 100%)',
+        }}
+      />
+
+      {/* subtle grid / circuitry */}
+      <div
+        className="absolute inset-0 opacity-35"
+        style={{
+          backgroundImage:
+            'linear-gradient(90deg, rgba(148,163,184,0.18) 1px, transparent 1px), linear-gradient(180deg, rgba(148,163,184,0.16) 1px, transparent 1px)',
+          backgroundSize: '120px 120px',
+        }}
+      />
+
+      {/* risk-tinted breathing glow */}
+      <div
+        className="absolute inset-0"
+        style={{
+          background: `radial-gradient(900px 640px at 72% 18%, ${accent}, transparent 60%)`,
+          filter: 'blur(58px)',
+          opacity: 0.25,
+          animation: 'softPulse 11s ease-in-out infinite',
+        }}
+      />
+
+      {/* vignette */}
+      <div className="absolute inset-0 bg-[radial-gradient(900px_520px_at_center,transparent,rgba(0,0,0,0.55))]" />
     </div>
   )
 }
 
-/* ============================== Living Care Map (WOW) ============================== */
-function LivingCareMap({
-  risk, hasAssess, hasSite, hasPrice, bookingState,
-}: { risk: Risk; hasAssess: boolean; hasSite: boolean; hasPrice: boolean; bookingState: 'idle'|'calling'|'ok'|'failed' }) {
-  const tone =
-    risk === 'severe' ? 'border-red-400/60'
-    : risk === 'moderate' ? 'border-amber-400/60'
-    : 'border-white/25'
+/* ============================== Living Care Map ============================== */
+type StepStatus = 'done' | 'active' | 'idle' | 'error'
 
-  const nodes: { key: string; label: string; status: 'done'|'active'|'idle'|'error'; meta?: string }[] = [
-    { key: 'now', label: 'Now', status: 'done' },
-    { key: 'assess', label: 'Assess', status: hasAssess ? 'done' : 'active' },
-    { key: 'site', label: 'Best Site', status: hasSite ? 'done' : (hasAssess ? 'active' : 'idle') },
-    { key: 'price', label: 'Price/ETA', status: hasPrice ? 'done' : (hasSite ? 'active' : 'idle') },
-    { key: 'book', label: 'Booked', status: bookingState === 'ok' ? 'done' : bookingState === 'calling' ? 'active' : bookingState === 'failed' ? 'error' : 'idle' },
-    { key: 'follow', label: 'Follow-up', status: 'idle' },
+type MapStage = {
+  key: string
+  label: string
+  detail: string
+  status: StepStatus
+  meta?: string
+}
+
+function LivingCareMap({
+  risk,
+  hasAssess,
+  hasSite,
+  hasPrice,
+  bookingState,
+  stage,
+  openTasks,
+  totalTasks,
+}: {
+  risk: Risk
+  hasAssess: boolean
+  hasSite: boolean
+  hasPrice: boolean
+  bookingState: 'idle' | 'calling' | 'ok' | 'failed'
+  stage: CareStage
+  openTasks: number
+  totalTasks: number
+}) {
+  const stageLabel =
+    stage === 'intake'
+      ? 'Listening first — building your story.'
+      : stage === 'triage'
+      ? 'Screening red flags and patterns.'
+      : stage === 'plan'
+      ? 'Drafting a care plan around your risks.'
+      : stage === 'actions'
+      ? 'Working through calls, sites, and next steps.'
+      : 'Wrapping up this episode with follow-ups.'
+
+  const progressLabel =
+    totalTasks > 0
+      ? `${totalTasks - openTasks} of ${totalTasks} follow-ups done`
+      : 'No follow-ups added yet'
+
+  const tasksMeta =
+    totalTasks > 0
+      ? `${totalTasks - openTasks}/${totalTasks} done`
+      : 'Add any steps you want to remember.'
+
+  const nodes: MapStage[] = [
+    {
+      key: 'describe',
+      label: 'Describe',
+      detail: 'Symptoms, context, photos.',
+      status: stage === 'intake' ? 'active' : 'done',
+    },
+    {
+      key: 'assess',
+      label: 'Assess',
+      detail: 'Patterns & red-flag check.',
+      status: stage === 'intake' ? 'idle' : hasAssess ? 'done' : 'active',
+    },
+    {
+      key: 'site',
+      label: hasSite ? 'Best site' : 'Home care',
+      detail: hasSite ? 'Urgent care, clinic, ER.' : 'Likely safe at home.',
+      status:
+        hasSite || stage === 'plan' || stage === 'actions' || stage === 'wrap'
+          ? 'done'
+          : 'idle',
+      meta:
+        !hasSite && risk === 'low'
+          ? 'Favors home care when safe.'
+          : risk !== 'low'
+          ? 'Leaning toward in-person care.'
+          : undefined,
+    },
+    {
+      key: 'price',
+      label: 'Price / ETA',
+      detail: 'Cost, distance, and time.',
+      status: hasPrice
+        ? stage === 'actions' || stage === 'wrap'
+          ? 'done'
+          : 'active'
+        : hasSite
+        ? 'active'
+        : 'idle',
+    },
+    {
+      key: 'book',
+      label: 'Booked',
+      detail: 'Call or online booking.',
+      status:
+        bookingState === 'ok'
+          ? 'done'
+          : bookingState === 'calling'
+          ? 'active'
+          : bookingState === 'failed'
+          ? 'error'
+          : 'idle',
+    },
+    {
+      key: 'follow',
+      label: 'Follow-ups',
+      detail: tasksMeta,
+      status:
+        stage === 'wrap'
+          ? 'done'
+          : openTasks > 0
+          ? 'active'
+          : 'idle',
+    },
   ]
 
-  return (
-    <div className={cx('rounded-xl border-[2px] bg-white/[0.04] px-3 py-2', tone)}>
-      <div className="flex items-center gap-2">
-        {nodes.map((n, i) => (
-          <div key={n.key} className="flex items-center gap-2 min-w-0">
-            <MapNode label={n.label} status={n.status} />
-            {i < nodes.length - 1 && <MapSpacer status={nodes[i].status} next={nodes[i+1].status} />}
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
+  const toneBorder =
+    risk === 'severe'
+      ? 'border-red-400/60'
+      : risk === 'moderate'
+      ? 'border-amber-400/55'
+      : 'border-emerald-400/60'
 
-function MapNode({ label, status }: { label: string; status: 'done'|'active'|'idle'|'error' }) {
-  const s =
-    status === 'done' ? 'bg-emerald-400 text-[#0B1C2E] border-emerald-300'
-    : status === 'active' ? 'bg-white/90 text-[#0B1C2E] border-white/80'
-    : status === 'error' ? 'bg-rose-400 text-[#0B1C2E] border-rose-300'
-    : 'bg-white/18 text-white/85 border-white/30'
-  return (
-    <div className="flex items-center gap-2">
-      <div className={cx('grid place-items-center h-6 w-6 rounded-full border text-[11px] font-semibold shadow-sm', s)} style={{ animation: 'nodePop 160ms ease-out both' }}>
-        {status === 'done' ? '✓' : status === 'error' ? '!' : '•'}
-      </div>
-      <span className="text-xs text-white/85 truncate">{label}</span>
-    </div>
-  )
-}
-function MapSpacer({ status, next }: { status: 'done'|'active'|'idle'|'error'; next: 'done'|'active'|'idle'|'error' }) {
-  const active = status !== 'idle' || next !== 'idle'
-  return (
-    <div className="w-12 h-[2px] bg-white/18 overflow-hidden rounded">
-      <div className={cx('h-full', active ? 'bg-white/80' : 'bg-white/18')} style={{ animation: active ? 'lineGrow 400ms ease-out both' : undefined }} />
-    </div>
-  )
-}
+  const completedIndex = nodes.reduce((idx, n, i) => {
+    if (n.status === 'done') return i
+    return idx
+  }, -1)
 
-/* ============================== Live Call Bubble ============================== */
-function LiveCallBubble({
-  status, transcript, placeName, onClose,
-}: { status: 'idle'|'calling'|'ok'|'failed'; transcript: string[]; placeName?: string; onClose: () => void }) {
-  const label =
-    status === 'calling' ? 'Calling…'
-    : status === 'ok' ? 'Connected'
-    : status === 'failed' ? 'Call failed'
-    : ''
+  const completedPct =
+    completedIndex <= 0
+      ? 0
+      : (completedIndex / (nodes.length - 1 || 1)) * 100
+
   return (
-    <div className="fixed right-6 bottom-6 z-40">
-      <div className="hover-card rounded-2xl border-[2px] border-white/25 bg-white/[0.06] backdrop-blur px-4 py-3 w-[260px]">
-        <div className="flex items-center justify-between">
-          <div className="text-sm text-white/90 font-medium">{label}</div>
-          <button onClick={onClose} className="text-[11px] text-white/75 hover:underline">Hide</button>
+    <div
+      className={cx(
+        'rounded-2xl border-[2px] bg-slate-900/80 px-3.5 py-2.5 backdrop-blur-xl shadow-[0_0_0_1px_rgba(15,23,42,0.3)]',
+        toneBorder,
+      )}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-200/80">
+            Living care map
+          </p>
+          <p className="mt-0.5 text-[11px] text-slate-200/80">{stageLabel}</p>
         </div>
-        {placeName && <div className="text-xs text-white/70 mt-0.5 truncate">→ {placeName}</div>}
-        <div className="mt-2 space-y-1 max-h-28 overflow-auto">
-          {transcript.map((t, i) => (
-            <div key={i} className="text-[11px] text-white/85">{t}</div>
+        <div className="text-right text-[11px] text-slate-300/90">
+          <div>{progressLabel}</div>
+        </div>
+      </div>
+
+      <div className="relative mt-3">
+        {/* base connector line */}
+        <div className="absolute left-[6%] right-[6%] top-4 h-[2px] rounded-full bg-slate-600/60" />
+        {/* completed segment */}
+        <div
+          className="absolute left-[6%] top-[15px] h-[2px] rounded-full bg-slate-50"
+          style={{ width: `${completedPct}%`, transition: 'width 260ms ease-out' }}
+        />
+
+        <div className="relative flex items-start justify-between gap-1">
+          {nodes.map((node, idx) => (
+            <StageNode key={node.key} node={node} index={idx} total={nodes.length} />
           ))}
         </div>
-        {status === 'calling' && (
-          <div className="mt-2 h-1.5 rounded-full bg-white/12 overflow-hidden">
-            <div className="h-full w-1/2 animate-pulse bg-white/85" />
+      </div>
+    </div>
+  )
+}
+
+function StageNode({
+  node,
+  index,
+  total,
+}: {
+  node: MapStage
+  index: number
+  total: number
+}) {
+  const isLast = index === total - 1
+  const isDone = node.status === 'done'
+  const isActive = node.status === 'active'
+  const isError = node.status === 'error'
+
+  const circleBase =
+    'grid h-7 w-7 place-items-center rounded-full border text-[11px] font-semibold shadow-sm'
+
+  const circleTone = isError
+    ? 'border-rose-300 bg-rose-500 text-slate-900'
+    : isDone
+    ? 'border-emerald-300 bg-emerald-400 text-slate-900'
+    : isActive
+    ? 'border-slate-100 bg-slate-50 text-slate-900'
+    : 'border-slate-500/70 bg-slate-900/80 text-slate-100/80'
+
+  const labelTone = isError
+    ? 'text-rose-100'
+    : isActive
+    ? 'text-slate-50'
+    : 'text-slate-100/80'
+
+  const detailTone = node.status === 'idle' ? 'text-slate-400/90' : 'text-slate-300/90'
+
+  const badge =
+    node.status === 'done'
+      ? 'Done'
+      : node.status === 'active'
+      ? 'Now'
+      : node.status === 'error'
+      ? 'Check'
+      : 'Queued'
+
+  return (
+    <div
+      className="flex min-w-0 flex-1 flex-col items-center gap-1 text-center"
+      style={{ animation: 'nodePop 160ms ease-out both' }}
+    >
+      <div className="flex flex-col items-center gap-1">
+        <div className={cx(circleBase, circleTone)}>
+          {isDone ? '✓' : isError ? '!' : index + 1}
+        </div>
+        {!isLast && (
+          <span className="rounded-full border border-slate-600/80 bg-slate-900/80 px-1.5 py-0.5 text-[9px] uppercase tracking-[0.16em] text-slate-200/80">
+            {badge}
+          </span>
+        )}
+      </div>
+      <div className="mt-0.5 flex min-w-0 flex-col items-center gap-0.5">
+        <div className={cx('truncate text-[11px] font-medium', labelTone)}>{node.label}</div>
+        <div className={cx('line-clamp-2 text-[10px]', detailTone)}>{node.detail}</div>
+        {node.meta && (
+          <div className="mt-0.5 line-clamp-2 text-[9px] text-emerald-200/85">
+            {node.meta}
           </div>
         )}
       </div>
@@ -1254,19 +2293,78 @@ function LiveCallBubble({
   )
 }
 
-/* ============================== Components ============================== */
+/* ============================== Live Call Bubble ============================== */
+function LiveCallBubble({
+  status,
+  transcript,
+  placeName,
+  onClose,
+}: {
+  status: 'idle' | 'calling' | 'ok' | 'failed'
+  transcript: string[]
+  placeName?: string
+  onClose: () => void
+}) {
+  const label =
+    status === 'calling'
+      ? 'Calling…'
+      : status === 'ok'
+      ? 'Connected'
+      : status === 'failed'
+      ? 'Call failed'
+      : ''
+  return (
+    <div className="fixed bottom-6 right-6 z-40">
+      <div className="hover-card w-[260px] rounded-2xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-3 backdrop-blur">
+        <div className="flex items-center justify-between">
+          <div className="text-sm font-medium text-slate-50">{label}</div>
+          <button
+            onClick={onClose}
+            className="text-[11px] text-slate-200 hover:underline"
+          >
+            Hide
+          </button>
+        </div>
+        {placeName && (
+          <div className="mt-0.5 truncate text-xs text-slate-300">→ {placeName}</div>
+        )}
+        <div className="mt-2 max-h-28 space-y-1 overflow-auto">
+          {transcript.map((t, i) => (
+            <div key={i} className="text-[11px] text-slate-100">
+              {t}
+            </div>
+          ))}
+        </div>
+        {status === 'calling' && (
+          <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-600/60">
+            <div className="h-full w-1/2 animate-pulse bg-slate-50" />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/* ============================== Small UI bits ============================== */
 function GateBanner({ msg, onClose }: { msg: string | null; onClose: () => void }) {
   if (!msg) return null
   return (
-    <div className="mt-2 rounded-lg border-[2px] border-amber-400/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-100 flex items-center justify-between">
+    <div className="mt-2 flex items-center justify-between rounded-lg border-[2px] border-amber-400/35 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
       <span>{msg}</span>
-      <button onClick={onClose} className="text-amber-100/90 hover:underline">Dismiss</button>
+      <button onClick={onClose} className="text-amber-100/90 hover:underline">
+        Dismiss
+      </button>
     </div>
   )
 }
 
 function RiskBadge({ risk }: { risk: Risk }) {
-  const label = risk === 'severe' ? 'Severe risk — act now' : risk === 'moderate' ? 'Moderate risk' : 'Low risk'
+  const label =
+    risk === 'severe'
+      ? 'Severe risk — act now'
+      : risk === 'moderate'
+      ? 'Moderate risk'
+      : 'Low risk'
   const tone =
     risk === 'severe'
       ? 'border-red-400/60 text-red-200'
@@ -1274,7 +2372,12 @@ function RiskBadge({ risk }: { risk: Risk }) {
       ? 'border-amber-400/60 text-amber-100'
       : 'border-emerald-400/60 text-emerald-100'
   return (
-    <span className={cx('inline-flex items-center gap-2 rounded-full border-[2px] bg-transparent px-2.5 py-1 text-xs', tone)}>
+    <span
+      className={cx(
+        'inline-flex items-center gap-2 rounded-full border-[2px] bg-transparent px-2.5 py-1 text-xs',
+        tone,
+      )}
+    >
       <span className="h-1.5 w-1.5 rounded-full bg-current" />
       {label}
     </span>
@@ -1283,15 +2386,16 @@ function RiskBadge({ risk }: { risk: Risk }) {
 
 function ChatBubble({ msg }: { msg: ChatMessage }) {
   const isUser = msg.role === 'user'
-  const needsSources = !isUser && isDeclarative(msg.text) && (!msg.citations || msg.citations.length === 0)
+  const needsSources =
+    !isUser && isDeclarative(msg.text) && (!msg.citations || msg.citations.length === 0)
   return (
     <div className={cx('flex', isUser ? 'justify-end' : 'justify-start')}>
       <div
         className={cx(
-          'hover-card relative max-w-[90%] sm:max-w-[82%] rounded-3xl px-4 py-3 shadow-sm will-change-transform overflow-hidden border-[2px]',
+          'hover-card relative max-w-[90%] rounded-3xl border-[2px] px-4 py-3 shadow-sm will-change-transform overflow-hidden sm:max-w-[82%]',
           isUser
-            ? 'bg-[var(--brand-blue)] text-white border-transparent'
-            : 'bg-white/[0.06] text-white backdrop-blur border-white/22 bubble-stella'
+            ? 'border-transparent bg-[var(--brand-blue)] text-slate-50'
+            : 'bubble-stella border-slate-600/80 bg-slate-900/90 text-slate-50 backdrop-blur',
         )}
         style={{ animation: 'sectionIn 240ms ease-out both' }}
       >
@@ -1301,18 +2405,27 @@ function ChatBubble({ msg }: { msg: ChatMessage }) {
           <>
             {msg.citations && msg.citations.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1.5">
-                {msg.citations.map((c, i) => <CitationChip key={i} c={c} />)}
+                {msg.citations.map((c, i) => (
+                  <CitationChip key={i} c={c} />
+                ))}
               </div>
             ) : needsSources ? (
-              <div className="mt-2 text-[11px] text-white/65">Collecting details — citations will appear with the next synthesis.</div>
+              <div className="mt-2 text-[11px] text-slate-300/90">
+                Collecting details — citations will appear with the next synthesis.
+              </div>
             ) : null}
           </>
         )}
 
         {msg.attachments?.length ? (
-          <div className="mt-2 flex flex-wrap gap-1 text-xs text-white/85">
+          <div className="mt-2 flex flex-wrap gap-1 text-xs text-slate-100">
             {msg.attachments.map((a, i) => (
-              <span key={i} className="rounded-md border-[2px] border-white/25 bg-white/10 px-2 py-0.5">{a.name}</span>
+              <span
+                key={i}
+                className="rounded-md border-[2px] border-slate-600/80 bg-slate-900/80 px-2 py-0.5"
+              >
+                {a.name}
+              </span>
             ))}
           </div>
         ) : null}
@@ -1325,10 +2438,23 @@ function RefImageStrip({ images }: { images: RefImage[] }) {
   return (
     <div className="mt-2 ml-2 flex gap-2">
       {images.slice(0, 3).map((im, i) => (
-        <a key={i} href={im.url} target="_blank" rel="noreferrer" className="group inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 p-2 hover:bg-white/10" title={im.title || im.url}>
+        <a
+          key={i}
+          href={im.url}
+          target="_blank"
+          rel="noreferrer"
+          className="group inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 p-2 hover:bg-slate-800/90"
+          title={im.title || im.url}
+        >
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={im.url} alt={im.title || 'reference'} className="h-10 w-14 rounded-md object-cover opacity-90 group-hover:opacity-100" />
-          <span className="text-[11px] text-white/85 truncate max-w-[10rem]">{im.source || domainOf(im.url)}</span>
+          <img
+            src={im.url}
+            alt={im.title || 'reference'}
+            className="h-10 w-14 rounded-md object-cover opacity-90 group-hover:opacity-100"
+          />
+          <span className="max-w-[10rem] truncate text-[11px] text-slate-100">
+            {im.source || domainOf(im.url)}
+          </span>
         </a>
       ))}
     </div>
@@ -1337,15 +2463,30 @@ function RefImageStrip({ images }: { images: RefImage[] }) {
 
 function TypingDots() {
   return (
-    <div className="flex gap-1 items-center text-white/85 text-sm pl-2">
+    <div className="flex items-center gap-1 pl-2 text-sm text-slate-100">
       <span className="relative flex h-2.5 w-2.5">
-        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-white/45 opacity-75"></span>
-        <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-white/90"></span>
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-slate-100/60 opacity-75" />
+        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-slate-100" />
       </span>
       <span className="inline-flex">
-        <span className="mx-0.5 animate-[dots_1.2s_ease-in-out_infinite]">•</span>
-        <span className="mx-0.5 animate-[dots_1.2s_ease-in-out_infinite_200ms]">•</span>
-        <span className="mx-0.5 animate-[dots_1.2s_ease-in-out_infinite_400ms]">•</span>
+        <span
+          className="mx-0.5 inline-block animate-[dots_1.2s_ease-in-out_infinite]"
+          style={{ animationDelay: '0s' }}
+        >
+          •
+        </span>
+        <span
+          className="mx-0.5 inline-block animate-[dots_1.2s_ease-in-out_infinite]"
+          style={{ animationDelay: '0.2s' }}
+        >
+          •
+        </span>
+        <span
+          className="mx-0.5 inline-block animate-[dots_1.2s_ease-in-out_infinite]"
+          style={{ animationDelay: '0.4s' }}
+        >
+          •
+        </span>
       </span>
     </div>
   )
@@ -1354,8 +2495,19 @@ function TypingDots() {
 function CitationChip({ c }: { c: Citation }) {
   const d = domainOf(c.url)
   return (
-    <a href={c.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 rounded-md border-[2px] border-white/30 bg-white/10 px-2 py-0.5 text-[11px] text-white/90 hover:bg-white/15" title={c.title}>
-      <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden><path fill="currentColor" d="M14 3v2h3.59L7 15.59 8.41 17 19 6.41V10h2V3z" /></svg>
+    <a
+      href={c.url}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1 rounded-md border-[2px] border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+      title={c.title}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden>
+        <path
+          fill="currentColor"
+          d="M14 3v2h3.59L7 15.59 8.41 17 19 6.41V10h2V3z"
+        />
+      </svg>
       {c.source || d || c.title}
     </a>
   )
@@ -1363,37 +2515,79 @@ function CitationChip({ c }: { c: Citation }) {
 
 /* ============================== Insight Cards ============================== */
 function InsightTriad({
-  card, delay = 0, durationMs = 500, onAICall, onExpand, onAddFollowUps,
-}: { card: InsightCard; delay?: number; durationMs?: number; onAICall: () => void; onExpand: () => void; onAddFollowUps: () => void }) {
+  card,
+  delay = 0,
+  durationMs = 500,
+  onAICall,
+  onExpand,
+  onAddFollowUps,
+}: {
+  card: InsightCard
+  delay?: number
+  durationMs?: number
+  onAICall: () => void
+  onExpand: () => void
+  onAddFollowUps: () => void
+}) {
   const hasWhy = (card.why?.length || 0) > 0
   const hasNext = (card.next?.length || 0) > 0
   const hasCites = (card.citations?.length || 0) > 0
 
   const urgencyTone =
-    card.urgency === 'severe' ? 'border-red-400/60'
-    : card.urgency === 'elevated' ? 'border-amber-400/60'
-    : 'border-white/30'
+    card.urgency === 'severe'
+      ? 'border-red-400/60'
+      : card.urgency === 'elevated'
+      ? 'border-amber-400/60'
+      : 'border-slate-600/80'
 
   const [open, setOpen] = useState(true)
 
   return (
-    <div className={cx('hover-card rounded-[22px] p-5 backdrop-blur relative overflow-hidden bg-white/[0.04] border-[2px]', urgencyTone)} style={{ animation: `floatInRight ${durationMs}ms ease-out both`, animationDelay: `${delay}ms` }} data-build>
+    <div
+      className={cx(
+        'hover-card relative overflow-hidden rounded-[22px] border-[2px] bg-slate-900/85 p-5 backdrop-blur',
+        urgencyTone,
+      )}
+      style={{
+        animation: `floatInRight ${durationMs}ms ease-out both`,
+        animationDelay: `${delay}ms`,
+      }}
+      data-build
+    >
       <div className="flex items-center justify-between">
         <div>
-          <h3 className="text-white/90 font-medium">{card.title}</h3>
-          <p className="text-[11px] text-white/65 mt-0.5">Concise summary with next steps.</p>
+          <h3 className="font-medium text-slate-50">{card.title}</h3>
+          <p className="mt-0.5 text-[11px] text-slate-300/90">
+            Concise summary with next steps.
+          </p>
         </div>
         <div className="flex items-center gap-2">
           {card.confidence && (
-            <span className={cx('rounded-full border-[2px] px-2 py-0.5 text-[11px]',
-              card.confidence === 'high' ? 'border-emerald-400/70 text-emerald-200'
-              : card.confidence === 'medium' ? 'border-amber-400/70 text-amber-200'
-              : 'border-white/50 text-white/75')}>
+            <span
+              className={cx(
+                'rounded-full border-[2px] px-2 py-0.5 text-[11px]',
+                card.confidence === 'high'
+                  ? 'border-emerald-400/70 text-emerald-200'
+                  : card.confidence === 'medium'
+                  ? 'border-amber-400/70 text-amber-200'
+                  : 'border-slate-500/70 text-slate-200',
+              )}
+            >
               {card.confidence} confidence
             </span>
           )}
-          <button onClick={onExpand} className="text-xs text-white/80 hover:underline">Fullscreen</button>
-          <button onClick={() => setOpen((v) => !v)} className="text-xs text-white/80 hover:underline">{open ? 'Collapse' : 'Expand'}</button>
+          <button
+            onClick={onExpand}
+            className="text-xs text-slate-200 hover:underline"
+          >
+            Fullscreen
+          </button>
+          <button
+            onClick={() => setOpen(v => !v)}
+            className="text-xs text-slate-200 hover:underline"
+          >
+            {open ? 'Collapse' : 'Expand'}
+          </button>
         </div>
       </div>
 
@@ -1401,72 +2595,158 @@ function InsightTriad({
         <>
           <div className="mt-3 grid gap-3">
             {hasWhy && (
-              <section className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3" style={{ animation: `sectionIn ${durationMs - 200}ms ease-out both`, animationDelay: `${delay + 120}ms` }}>
-                <header className="text-xs text-white/70">What you’re saying</header>
-                <ul className="mt-1.5 list-disc pl-5 text-sm text-white/85">{card.why!.map((w, i) => <li key={i}>{w}</li>)}</ul>
+              <section
+                className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 p-3"
+                style={{
+                  animation: `sectionIn ${durationMs - 200}ms ease-out both`,
+                  animationDelay: `${delay + 120}ms`,
+                }}
+              >
+                <header className="text-xs text-slate-300/90">
+                  What you’re saying
+                </header>
+                <ul className="mt-1.5 list-disc pl-5 text-sm text-slate-50">
+                  {card.why!.map((w, i) => (
+                    <li key={i}>{w}</li>
+                  ))}
+                </ul>
               </section>
             )}
-            <section className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3" style={{ animation: `sectionIn ${durationMs - 200}ms ease-out both`, animationDelay: `${delay + 240}ms` }}>
-              <header className="text-xs text-white/70">What it sounds like</header>
-              <p className="mt-1.5 text-sm leading-6 text-white/85">{card.body}</p>
+            <section
+              className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 p-3"
+              style={{
+                animation: `sectionIn ${durationMs - 200}ms ease-out both`,
+                animationDelay: `${delay + 240}ms`,
+              }}
+            >
+              <header className="text-xs text-slate-300/90">
+                What it sounds like
+              </header>
+              <p className="mt-1.5 text-sm leading-6 text-slate-50">{card.body}</p>
             </section>
             {hasNext && (
-              <section className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3" style={{ animation: `sectionIn ${durationMs - 200}ms ease-out both`, animationDelay: `${delay + 360}ms` }}>
-                <header className="text-xs text-white/70">What to do</header>
-                <ul className="mt-1.5 list-disc pl-5 text-sm text-white/85">{card.next!.map((n, i) => <li key={i}>{n}</li>)}</ul>
+              <section
+                className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 p-3"
+                style={{
+                  animation: `sectionIn ${durationMs - 200}ms ease-out both`,
+                  animationDelay: `${delay + 360}ms`,
+                }}
+              >
+                <header className="text-xs text-slate-300/90">
+                  What to do
+                </header>
+                <ul className="mt-1.5 list-disc pl-5 text-sm text-slate-50">
+                  {card.next!.map((n, i) => (
+                    <li key={i}>{n}</li>
+                  ))}
+                </ul>
                 <div className="mt-2 flex gap-2">
-                  <button onClick={onAICall} className="text-xs rounded-md border-[2px] border-white/30 bg-white/5 px-2 py-1 text-white/90 hover:bg-white/10">Have No Trek call for you</button>
-                  <button onClick={onAddFollowUps} className="text-xs rounded-md border-[2px] border-white/30 bg-white/5 px-2 py-1 text-white/90 hover:bg-white/10">Add to follow-ups</button>
+                  <button
+                    onClick={onAICall}
+                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-800/90"
+                  >
+                    Have No Trek call for you
+                  </button>
+                  <button
+                    onClick={onAddFollowUps}
+                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-800/90"
+                  >
+                    Add to follow-ups
+                  </button>
                 </div>
               </section>
             )}
           </div>
 
           {hasCites ? (
-            <div className="mt-3 flex flex-wrap gap-1.5" style={{ animation: `sectionIn ${durationMs - 200}ms ease-out both`, animationDelay: `${delay + 480}ms` }}>
-              {card.citations!.map((c, i) => <CitationChip key={i} c={c} />)}
+            <div
+              className="mt-3 flex flex-wrap gap-1.5"
+              style={{
+                animation: `sectionIn ${durationMs - 200}ms ease-out both`,
+                animationDelay: `${delay + 480}ms`,
+              }}
+            >
+              {card.citations!.map((c, i) => (
+                <CitationChip key={i} c={c} />
+              ))}
             </div>
           ) : (
-            <div className="mt-3 text-[11px] text-white/60">No acceptable sources provided.</div>
+            <div className="mt-3 text-[11px] text-slate-400">
+              No acceptable sources provided.
+            </div>
           )}
-          {card.at && <div className="mt-2 text-[10px] text-white/45">Updated {new Date(card.at).toLocaleTimeString()}</div>}
+          {card.at && (
+            <div className="mt-2 text-[10px] text-slate-500">
+              Updated {new Date(card.at).toLocaleTimeString()}
+            </div>
+          )}
         </>
       )}
     </div>
   )
 }
 
-function CardFullscreen({ card, onClose, onAddFollowUps }: { card: InsightCard; onClose: () => void; onAddFollowUps: () => void }) {
+function CardFullscreen({
+  card,
+  onClose,
+  onAddFollowUps,
+}: {
+  card: InsightCard
+  onClose: () => void
+  onAddFollowUps: () => void
+}) {
   return (
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="absolute inset-6 sm:inset-10 rounded-2xl bg-[#0E223B] p-6 overflow-y-auto hover-card border-[2px] border-white/20">
+      <div className="hover-card absolute inset-6 overflow-y-auto rounded-2xl border-[2px] border-slate-700/80 bg-slate-900/95 p-6 sm:inset-10">
         <div className="flex items-center justify-between">
-          <h3 className="text-white text-xl font-semibold">{card.title}</h3>
+          <h3 className="text-xl font-semibold text-slate-50">{card.title}</h3>
           <div className="flex items-center gap-2">
-            <button onClick={onAddFollowUps} className="rounded-xl border-[2px] border-white/25 bg-white/5 px-3 py-1 text-white/85 hover:bg-white/10">Add to follow-ups</button>
-            <button onClick={onClose} className="rounded-xl border-[2px] border-white/25 bg-white/5 px-3 py-1 text-white/85 hover:bg-white/10">Close</button>
+            <button
+              onClick={onAddFollowUps}
+              className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-slate-100 hover:bg-slate-800/90"
+            >
+              Add to follow-ups
+            </button>
+            <button
+              onClick={onClose}
+              className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-slate-100 hover:bg-slate-800/90"
+            >
+              Close
+            </button>
           </div>
         </div>
         <div className="mt-4 space-y-4">
           {card.why?.length ? (
-            <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-4">
-              <div className="text-xs text-white/70">What you’re saying</div>
-              <ul className="mt-2 list-disc pl-5 text-sm text-white/85">{card.why.map((w, i) => <li key={i}>{w}</li>)}</ul>
+            <div className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 p-4">
+              <div className="text-xs text-slate-300/90">What you’re saying</div>
+              <ul className="mt-2 list-disc pl-5 text-sm text-slate-50">
+                {card.why.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
             </div>
           ) : null}
-          <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-4">
-            <div className="text-xs text-white/70">What it sounds like</div>
-            <p className="mt-2 text-sm text-white/85 leading-6">{card.body}</p>
+          <div className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 p-4">
+            <div className="text-xs text-slate-300/90">What it sounds like</div>
+            <p className="mt-2 text-sm leading-6 text-slate-50">{card.body}</p>
           </div>
           {card.next?.length ? (
-            <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-4">
-              <div className="text-xs text-white/70">What to do</div>
-              <ul className="mt-2 list-disc pl-5 text-sm text-white/85">{card.next.map((n, i) => <li key={i}>{n}</li>)}</ul>
+            <div className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 p-4">
+              <div className="text-xs text-slate-300/90">What to do</div>
+              <ul className="mt-2 list-disc pl-5 text-sm text-slate-50">
+                {card.next.map((n, i) => (
+                  <li key={i}>{n}</li>
+                ))}
+              </ul>
             </div>
           ) : null}
           {card.citations?.length ? (
-            <div className="flex flex-wrap gap-1.5">{card.citations.map((c, i) => <CitationChip key={i} c={c} />)}</div>
+            <div className="flex flex-wrap gap-1.5">
+              {card.citations.map((c, i) => (
+                <CitationChip key={i} c={c} />
+              ))}
+            </div>
           ) : null}
         </div>
       </div>
@@ -1476,76 +2756,154 @@ function CardFullscreen({ card, onClose, onAddFollowUps }: { card: InsightCard; 
 
 function RightRailPlaceholder() {
   return (
-    <div className="hover-card rounded-[22px] bg-white/[0.03] p-5 border-[2px] border-white/20">
-      <div className="h-4 w-32 rounded bg-white/12" />
+    <div className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-slate-900/85 p-5 backdrop-blur">
+      <div className="h-4 w-32 rounded bg-slate-700/60" />
       <div className="mt-3 space-y-3">
-        {[1, 2, 3].map((i) => (
-          <div key={i} className="rounded-xl border-[2px] border-white/15 bg-white/[0.03] p-3">
-            <div className="h-3 w-28 rounded bg-white/12" />
-            <div className="mt-2 h-3 w-48 rounded bg-white/12" />
-            <div className="mt-2 h-3 w-40 rounded bg-white/12" />
+        {[1, 2, 3].map(i => (
+          <div
+            key={i}
+            className="rounded-xl border-[2px] border-slate-700/80 bg-slate-900/75 p-3"
+          >
+            <div className="h-3 w-28 rounded bg-slate-700/70" />
+            <div className="mt-2 h-3 w-48 rounded bg-slate-700/70" />
+            <div className="mt-2 h-3 w-40 rounded bg-slate-700/70" />
           </div>
         ))}
       </div>
-      <div className="mt-3 h-5 w-24 rounded bg-white/12" />
+      <div className="mt-3 h-5 w-24 rounded bg-slate-700/70" />
     </div>
   )
 }
 
 /* ============================== Session File ============================== */
-function SessionFile({ messages, insights, top3, onCall }: { messages: ChatMessage[]; insights: InsightCard[]; top3: Place[]; onCall: () => void }) {
-  const recentUser = useMemo(() => messages.filter((m) => m.role === 'user').slice(-4).map((m) => m.text).filter(Boolean), [messages])
+function SessionFile({
+  messages,
+  insights,
+  top3,
+  onCall,
+  onExportPlan,
+}: {
+  messages: ChatMessage[]
+  insights: InsightCard[]
+  top3: Place[]
+  onCall: () => void
+  onExportPlan: () => void
+}) {
+  const recentUser = useMemo(
+    () =>
+      messages
+        .filter(m => m.role === 'user')
+        .slice(-4)
+        .map(m => m.text)
+        .filter(Boolean),
+    [messages],
+  )
   const actionList = useMemo(() => {
     const acc: string[] = []
-    insights.forEach((i) => (i.next || []).forEach((n) => acc.push(n)))
+    insights.forEach(i => (i.next || []).forEach(n => acc.push(n)))
     return acc.slice(-6)
   }, [insights])
 
-  const hasAny = recentUser.length > 0 || actionList.length > 0 || top3.length > 0
+  const hasAny =
+    recentUser.length > 0 || actionList.length > 0 || top3.length > 0
   return (
-    <div className="hover-card mt-5 rounded-2xl bg-white/[0.03] p-4 border-[2px] border-white/20">
+    <div className="hover-card mt-5 rounded-2xl border-[2px] border-slate-700/80 bg-slate-900/85 p-4 backdrop-blur">
       <div className="flex items-center justify-between">
         <div>
-          <h4 className="text-sm font-semibold text-white/90">Session File</h4>
-          <p className="text-[11px] text-white/65 mt-0.5">Signals, actions, and top picks — auto-built.</p>
+          <h4 className="text-sm font-semibold text-slate-50">Session File</h4>
+          <p className="mt-0.5 text-[11px] text-slate-300/90">
+            Signals, actions, and top picks — auto-built.
+          </p>
         </div>
-        <span className="text-[11px] text-white/65">Auto-updating</span>
+        <div className="flex items-center gap-2">
+          <span className="text-[11px] text-slate-300/90">Auto-updating</span>
+          <button
+            onClick={onExportPlan}
+            className="rounded-full border-[1px] border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+          >
+            Send to Tasks
+          </button>
+        </div>
       </div>
       {!hasAny ? (
-        <p className="mt-2 text-sm text-white/70">Your session file will build here as we learn more.</p>
+        <p className="mt-2 text-sm text-slate-200/90">
+          Your session file will build here as we learn more.
+        </p>
       ) : (
         <div className="mt-3 grid gap-3 md:grid-cols-3">
           {recentUser.length > 0 && (
-            <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3">
-              <div className="text-xs text-white/70">Signals</div>
-              <ul className="mt-1.5 list-disc pl-5 text-sm text-white/85">
-                {recentUser.map((u, i) => <li key={i} style={{ animation: 'sectionIn .4s ease-out both', animationDelay: `${i * 60}ms` }}>{u}</li>)}
+            <div className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 p-3">
+              <div className="text-xs text-slate-300/90">Signals</div>
+              <ul className="mt-1.5 list-disc pl-5 text-sm text-slate-50">
+                {recentUser.map((u, i) => (
+                  <li
+                    key={i}
+                    style={{
+                      animation: 'sectionIn .4s ease-out both',
+                      animationDelay: `${i * 60}ms`,
+                    }}
+                  >
+                    {u}
+                  </li>
+                ))}
               </ul>
             </div>
           )}
 
           {actionList.length > 0 && (
-            <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3">
-              <div className="text-xs text-white/70">Actions</div>
-              <ul className="mt-1.5 list-disc pl-5 text-sm text-white/85">{actionList.map((a, i) => <li key={i} style={{ animation: 'sectionIn .4s ease-out both', animationDelay: `${i * 60}ms` }}>{a}</li>)}</ul>
-              <div className="mt-2"><button onClick={onCall} className="text-xs rounded-md border-[2px] border-white/30 bg-white/5 px-2 py-1 text-white/90 hover:bg-white/10">Have No Trek call for you</button></div>
+            <div className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 p-3">
+              <div className="text-xs text-slate-300/90">Actions</div>
+              <ul className="mt-1.5 list-disc pl-5 text-sm text-slate-50">
+                {actionList.map((a, i) => (
+                  <li
+                    key={i}
+                    style={{
+                      animation: 'sectionIn .4s ease-out both',
+                      animationDelay: `${i * 60}ms`,
+                    }}
+                  >
+                    {a}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-2">
+                <button
+                  onClick={onCall}
+                  className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-800/90"
+                >
+                  Have No Trek call for you
+                </button>
+              </div>
             </div>
           )}
 
           {top3.length > 0 && (
-            <div className="rounded-xl border-[2px] border-white/20 bg-white/[0.03] p-3">
-              <div className="text-xs text-white/70">Top care picks</div>
+            <div className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 p-3">
+              <div className="text-xs text-slate-300/90">Top care picks</div>
               <div className="mt-1.5 space-y-2">
-                {top3.map((p) => (
+                {top3.map(p => (
                   <div key={p.id} className="flex items-center gap-2">
-                    <div className="h-8 w-10 rounded-md overflow-hidden bg-white/10">
+                    <div className="h-8 w-10 overflow-hidden rounded-md bg-black/20">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
-                      {p.image ? <img src={p.image} alt={p.name} className="h-full w-full object-cover" /> : null}
+                      {p.image ? (
+                        <img
+                          src={p.image}
+                          alt={p.name}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <div className="grid h-full w-full place-items-center text-xs text-slate-400">
+                          Clinic photo
+                        </div>
+                      )}
                     </div>
                     <div className="min-w-0">
-                      <div className="text-sm text-white/90 truncate">{p.name}</div>
-                      <div className="text-[11px] text-white/65 truncate">
-                        {typeof p.rating === 'number' ? `${p.rating.toFixed(1)}★` : ''} {p.distance_km ? `· ${p.distance_km.toFixed(1)} km` : ''}
+                      <div className="truncate text-sm text-slate-50">{p.name}</div>
+                      <div className="truncate text-[11px] text-slate-400">
+                        {typeof p.rating === 'number'
+                          ? `${p.rating.toFixed(1)}★`
+                          : ''}{' '}
+                        {p.distance_km ? `· ${p.distance_km.toFixed(1)} km` : ''}
                       </div>
                     </div>
                   </div>
@@ -1560,84 +2918,221 @@ function SessionFile({ messages, insights, top3, onCall }: { messages: ChatMessa
 }
 
 /* ============================== Places ============================== */
-function PlaceRow({ p, onOpen, onCall, onFollowUp, showWhy = false }: { p: Place; onOpen: () => void; onCall: () => void; onFollowUp: () => void; showWhy?: boolean }) {
+function PlaceRow({
+  p,
+  onOpen,
+  onCall,
+  onFollowUp,
+  showWhy = false,
+}: {
+  p: Place
+  onOpen: () => void
+  onCall: () => void
+  onFollowUp: () => void
+  showWhy?: boolean
+}) {
   return (
-    <div className="hover-card w-full rounded-xl border-[2px] border-white/20 bg-white/[0.05] p-3">
-      <div className="flex items-center gap-3">
-        <div className="h-12 w-16 overflow-hidden rounded-lg bg-black/20">
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          {p.image ? <img src={p.image} alt={p.name} className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-white/35 text-xs">Photo</div>}
-        </div>
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <p className="truncate text-white/90 font-medium">{p.name}</p>
-            {typeof p.rating === 'number' && <Stars value={p.rating} />}
-            {p.price && <span className="text-xs text-white/65">{p.price}</span>}
+    <div className="hover-card w-full overflow-hidden rounded-2xl border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-900/60">
+      <div className="relative h-20 w-full overflow-hidden border-b border-slate-700/80 bg-slate-950/80">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        {p.image ? (
+          <img
+            src={p.image}
+            alt={p.name}
+            className="h-full w-full object-cover opacity-80"
+          />
+        ) : (
+          <div className="grid h-full w-full place-items-center text-xs text-slate-500">
+            Clinic photo
           </div>
-          <p className="text-xs text-white/65 truncate">{p.address || ''} {p.distance_km ? `· ${p.distance_km.toFixed(1)} km` : ''}</p>
-          <p className="mt-1 text-xs text-white/80 line-clamp-2">{p.blurb || placeBlurb(p)}</p>
-          {showWhy && (p.reason || p.scoreNotes) && <p className="mt-1 text-xs text-white/80 line-clamp-2">{p.reason || p.scoreNotes}</p>}
+        )}
+        <div className="absolute left-3 top-2 rounded-full border border-slate-500/60 bg-slate-900/80 px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-slate-200/90">
+          Care option
         </div>
-        <div className="ml-auto flex items-center gap-2">
-          <button onClick={onOpen} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">Details</button>
-          <button onClick={onCall} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">Call for me</button>
-          <button onClick={onFollowUp} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">+ Follow-up</button>
+      </div>
+      <div className="flex items-start gap-3 p-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="truncate font-medium text-slate-50">{p.name}</p>
+            {typeof p.rating === 'number' && <Stars value={p.rating} />}
+            {p.price && (
+              <span className="text-[11px] text-slate-300">{p.price}</span>
+            )}
+            {typeof p.score?.overall === 'number' && (
+              <span className="ml-1 rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-200/90">
+                NT score {p.score.overall.toFixed(1)}/5
+              </span>
+            )}
+          </div>
+          <p className="truncate text-xs text-slate-400">
+            {p.address || ''}{' '}
+            {p.distance_km ? `· ${p.distance_km.toFixed(1)} km` : ''}
+          </p>
+          <p className="mt-1 line-clamp-2 text-xs text-slate-100">
+            {p.blurb || placeBlurb(p)}
+          </p>
+          {showWhy && (p.reason || p.scoreNotes) && (
+            <p className="mt-1 line-clamp-2 text-[11px] text-slate-200/90">
+              {p.reason || p.scoreNotes}
+            </p>
+          )}
+        </div>
+        <div className="ml-auto flex flex-col items-end gap-1">
+          <button
+            onClick={onOpen}
+            className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+          >
+            Details
+          </button>
+          <button
+            onClick={onCall}
+            className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+          >
+            Call for me
+          </button>
+          <button
+            onClick={onFollowUp}
+            className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+          >
+            + Follow-up
+          </button>
         </div>
       </div>
     </div>
   )
 }
 
-function AllPlacesPanel({ places, onClose, onOpenPlace, onCallPlace, onFollowUpPlace }: { places: Place[]; onClose: () => void; onOpenPlace: (p: Place) => void; onCallPlace: (p: Place) => void; onFollowUpPlace: (p: Place) => void }) {
+function AllPlacesPanel({
+  places,
+  onClose,
+  onOpenPlace,
+  onCallPlace,
+  onFollowUpPlace,
+}: {
+  places: Place[]
+  onClose: () => void
+  onOpenPlace: (p: Place) => void
+  onCallPlace: (p: Place) => void
+  onFollowUpPlace: (p: Place) => void
+}) {
   return (
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="absolute right-0 top-0 h-full w-full max-w-xl bg-[#0E223B] border-l border-white/15 shadow-2xl">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/15">
+      <div className="absolute right-0 top-0 h-full w-full max-w-xl border-l border-slate-700/80 bg-slate-950">
+        <div className="flex items-center justify-between border-b border-slate-700/80 px-5 py-4">
           <div>
-            <h3 className="text-white font-semibold">All nearby care</h3>
-            <p className="text-[11px] text-white/65 mt-0.5">Only clinics with verifiable public reviews are listed unless you toggle “Show unverified”.</p>
+            <h3 className="font-semibold text-slate-50">All nearby care</h3>
+            <p className="mt-0.5 text-[11px] text-slate-300/90">
+              Only clinics with verifiable public reviews are listed unless you toggle
+              “Show unverified”.
+            </p>
           </div>
-          <button onClick={onClose} className="rounded-full pill px-3 py-1.5 text-white/90 hover:bg-white/10">Close</button>
+          <button
+            onClick={onClose}
+            className="pill rounded-full px-3 py-1.5 text-slate-100 hover:bg-slate-800/90"
+          >
+            Close
+          </button>
         </div>
-        <div className="p-5 space-y-3 overflow-y-auto h-[calc(100%-60px)]">
-          {places.map((p) => (
-            <div key={p.id} className="hover-card rounded-xl border-[2px] border-white/20 bg-white/[0.05] p-3">
+        <div className="h-[calc(100%-60px)] space-y-3 overflow-y-auto p-5">
+          {places.map(p => (
+            <div
+              key={p.id}
+              className="hover-card rounded-2xl border-[2px] border-slate-700/80 bg-slate-900/85 p-3"
+            >
               <div className="flex items-center gap-3">
                 <div className="h-14 w-20 overflow-hidden rounded-lg bg-black/20">
                   {/* eslint-disable-next-line @next/next/no-img-element */}
-                  {p.image ? <img src={p.image} alt={p.name} className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-white/35 text-xs">Photo</div>}
+                  {p.image ? (
+                    <img
+                      src={p.image}
+                      alt={p.name}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="grid h-full w-full place-items-center text-xs text-slate-400">
+                      Photo
+                    </div>
+                  )}
                 </div>
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <p className="truncate text-white/90 font-medium">{p.name}</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="truncate font-medium text-slate-50">{p.name}</p>
                     {typeof p.rating === 'number' && <Stars value={p.rating} />}
-                    {p.price && <span className="text-xs text-white/65">{p.price}</span>}
+                    {p.price && (
+                      <span className="text-xs text-slate-300">{p.price}</span>
+                    )}
+                    {typeof p.score?.overall === 'number' && (
+                      <span className="ml-1 rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-200/90">
+                        NT score {p.score.overall.toFixed(1)}/5
+                      </span>
+                    )}
                   </div>
-                  <p className="text-xs text-white/65 truncate">{p.address || ''} {p.distance_km ? `· ${p.distance_km.toFixed(1)} km` : ''}</p>
-                  <p className="mt-1 text-xs text-white/80">{p.blurb || placeBlurb(p)}</p>
-                  {p.scoreNotes && <p className="mt-1 text-xs text-white/75">{p.scoreNotes}</p>}
+                  <p className="truncate text-xs text-slate-400">
+                    {p.address || ''}{' '}
+                    {p.distance_km ? `· ${p.distance_km.toFixed(1)} km` : ''}
+                  </p>
+                  <p className="mt-1 text-xs text-slate-100">
+                    {p.blurb || placeBlurb(p)}
+                  </p>
+                  {p.scoreNotes && (
+                    <p className="mt-1 text-xs text-slate-200/90">{p.scoreNotes}</p>
+                  )}
 
                   {p.reviewCite?.url && (
-                    <div className="mt-2 rounded-lg border-[2px] border-white/15 bg-white/[0.03] p-2">
-                      {p.reviewCite.quote && <p className="text-xs text-white/90">“{p.reviewCite.quote}”</p>}
-                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-white/70">
-                        {typeof p.reviewCite.rating === 'number' && (<span title={`${p.reviewCite.rating.toFixed(1)}★`}>★ {p.reviewCite.rating.toFixed(1)}</span>)}
+                    <div className="mt-2 rounded-lg border-[2px] border-slate-700/80 bg-slate-900/80 p-2">
+                      {p.reviewCite.quote && (
+                        <p className="text-xs text-slate-50">
+                          “{p.reviewCite.quote}”
+                        </p>
+                      )}
+                      <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-300/90">
+                        {typeof p.reviewCite.rating === 'number' && (
+                          <span title={`${p.reviewCite.rating.toFixed(1)}★`}>
+                            ★ {p.reviewCite.rating.toFixed(1)}
+                          </span>
+                        )}
                         {p.reviewCite.author && <span>— {p.reviewCite.author}</span>}
-                        <a className="underline hover:text-white/90" href={p.reviewCite.url} target="_blank" rel="noreferrer">{p.reviewCite.source || domainOf(p.reviewCite.url)}</a>
+                        <a
+                          className="underline hover:text-slate-50"
+                          href={p.reviewCite.url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {p.reviewCite.source || domainOf(p.reviewCite.url)}
+                        </a>
                         {p.reviewCite.date && <span>({p.reviewCite.date})</span>}
                       </div>
                     </div>
                   )}
 
                   {p.scoreSources?.length ? (
-                    <div className="mt-2 flex flex-wrap gap-1.5">{p.scoreSources.map((c, i) => <CitationChip key={i} c={c} />)}</div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {p.scoreSources.map((c, i) => (
+                        <CitationChip key={i} c={c} />
+                      ))}
+                    </div>
                   ) : null}
                 </div>
-                <div className="ml-auto flex items-center gap-2">
-                  <button onClick={() => onOpenPlace(p)} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">Details</button>
-                  <button onClick={() => onCallPlace(p)} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">Call for me</button>
-                  <button onClick={() => onFollowUpPlace(p)} className="text-xs rounded-md border-[2px] border-white/25 px-2 py-1 text-white/90 hover:bg-white/10">+ Follow-up</button>
+                <div className="ml-auto flex flex-col items-end gap-1">
+                  <button
+                    onClick={() => onOpenPlace(p)}
+                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+                  >
+                    Details
+                  </button>
+                  <button
+                    onClick={() => onCallPlace(p)}
+                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+                  >
+                    Call for me
+                  </button>
+                  <button
+                    onClick={() => onFollowUpPlace(p)}
+                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+                  >
+                    + Follow-up
+                  </button>
                 </div>
               </div>
             </div>
@@ -1649,10 +3144,30 @@ function AllPlacesPanel({ places, onClose, onOpenPlace, onCallPlace, onFollowUpP
 }
 
 /* ============================== Place Drawer ============================== */
-function PlaceDrawer({ place, fullscreen, onToggleFullscreen, onClose, onCall, onFollowUp }: { place: Place; fullscreen: boolean; onToggleFullscreen: () => void; onClose: () => void; onCall: () => void; onFollowUp: () => void }) {
+function PlaceDrawer({
+  place,
+  fullscreen,
+  onToggleFullscreen,
+  onClose,
+  onCall,
+  onFollowUp,
+}: {
+  place: Place
+  fullscreen: boolean
+  onToggleFullscreen: () => void
+  onClose: () => void
+  onCall: () => void
+  onFollowUp: () => void
+}) {
   const bullets: string[] = []
-  if (typeof place.rating === 'number') bullets.push(`${place.rating.toFixed(1)}★ ${place.reviews ? `(${place.reviews} reviews)` : ''}`)
-  if (typeof place.distance_km === 'number') bullets.push(`${place.distance_km.toFixed(1)} km away`)
+  if (typeof place.rating === 'number')
+    bullets.push(
+      `${place.rating.toFixed(1)}★ ${
+        place.reviews ? `(${place.reviews} reviews)` : ''
+      }`,
+    )
+  if (typeof place.distance_km === 'number')
+    bullets.push(`${place.distance_km.toFixed(1)} km away`)
   if (place.price) bullets.push(`price band ${place.price}`)
   if (place.est_cost_min || place.est_cost_max) {
     const lo = place.est_cost_min ?? place.est_cost_max
@@ -1664,71 +3179,173 @@ function PlaceDrawer({ place, fullscreen, onToggleFullscreen, onClose, onCall, o
   return (
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className={cx('absolute bg-[#0E223B] border-t border-white/15 shadow-2xl', fullscreen ? 'inset-0 rounded-none' : 'bottom-0 left-0 right-0 rounded-t-3xl')}>
+      <div
+        className={cx(
+          'absolute border-t border-slate-700/80 bg-slate-950 shadow-2xl',
+          fullscreen ? 'inset-0 rounded-none' : 'bottom-0 left-0 right-0 rounded-t-3xl',
+        )}
+      >
         <div className="mx-auto max-w-4xl p-5">
           <div className="flex items-start gap-4">
             <div className="h-28 w-44 overflow-hidden rounded-xl bg-black/20">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              {place.image ? <img src={place.image} alt={place.name} className="h-full w-full object-cover" /> : <div className="h-full w-full grid place-items-center text-white/35 text-xs">Photo</div>}
+              {place.image ? (
+                <img
+                  src={place.image}
+                  alt={place.name}
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <div className="grid h-full w-full place-items-center text-xs text-slate-400">
+                  Photo
+                </div>
+              )}
             </div>
             <div className="min-w-0 flex-1">
               <div className="flex items-center justify-between">
-                <h3 className="text-white text-lg font-semibold">{place.name}</h3>
+                <h3 className="text-lg font-semibold text-slate-50">{place.name}</h3>
                 <div className="flex items-center gap-2">
-                  <button onClick={onToggleFullscreen} className="rounded-xl border-[2px] border-white/25 bg-white/5 px-3 py-1 text-white/85 hover:bg-white/10">{fullscreen ? 'Exit fullscreen' : 'Fullscreen'}</button>
-                  <button onClick={onClose} className="rounded-xl border-[2px] border-white/25 bg-white/5 px-3 py-1 text-white/85 hover:bg-white/10">Close</button>
+                  <button
+                    onClick={onToggleFullscreen}
+                    className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-slate-100 hover:bg-slate-800/90"
+                  >
+                    {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                  </button>
+                  <button
+                    onClick={onClose}
+                    className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-slate-100 hover:bg-slate-800/90"
+                  >
+                    Close
+                  </button>
                 </div>
               </div>
-              <p className="text-white/75 text-sm mt-0.5">{place.address || ''} {place.distance_km ? `· ${place.distance_km.toFixed(1)} km` : ''}</p>
+              <p className="mt-0.5 text-sm text-slate-200/90">
+                {place.address || ''}{' '}
+                {place.distance_km ? `· ${place.distance_km.toFixed(1)} km` : ''}
+              </p>
 
               <div className="mt-2 grid gap-3">
-                <section className="rounded-lg border-[2px] border-white/20 bg-white/[0.04] p-3">
-                  <header className="text-xs text-white/70">About this place</header>
-                  <p className="mt-1 text-sm text-white/85">{place.blurb || placeBlurb(place)}</p>
+                <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
+                  <header className="text-xs text-slate-300/90">
+                    About this place
+                  </header>
+                  <p className="mt-1 text-sm text-slate-50">
+                    {place.blurb || placeBlurb(place)}
+                  </p>
                 </section>
 
                 {bullets.length > 0 && (
-                  <section className="rounded-lg border-[2px] border-white/20 bg-white/[0.04] p-3">
-                    <header className="text-xs text-white/70">Why we picked this</header>
-                    <ul className="mt-1 list-disc pl-5 text-sm text-white/85">{bullets.map((b, i) => <li key={i}>{b}</li>)}</ul>
+                  <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
+                    <header className="text-xs text-slate-300/90">
+                      Why we picked this
+                    </header>
+                    <ul className="mt-1 list-disc pl-5 text-sm text-slate-50">
+                      {bullets.map((b, i) => (
+                        <li key={i}>{b}</li>
+                      ))}
+                    </ul>
                   </section>
                 )}
 
                 {place.reviewCite?.url && (
-                  <section className="rounded-lg border-[2px] border-white/20 bg-white/[0.04] p-3">
-                    <header className="text-xs text-white/70">Recent review (citation)</header>
-                    {place.reviewCite.quote && <p className="mt-1 text-sm text-white/90">“{place.reviewCite.quote}”</p>}
-                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-white/70">
-                      {typeof place.reviewCite.rating === 'number' && (<span title={`${place.reviewCite.rating.toFixed(1)}★`}>★ {place.reviewCite.rating.toFixed(1)}</span>)}
+                  <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
+                    <header className="text-xs text-slate-300/90">
+                      Recent review (citation)
+                    </header>
+                    {place.reviewCite.quote && (
+                      <p className="mt-1 text-sm text-slate-50">
+                        “{place.reviewCite.quote}”
+                      </p>
+                    )}
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-300/90">
+                      {typeof place.reviewCite.rating === 'number' && (
+                        <span title={`${place.reviewCite.rating.toFixed(1)}★`}>
+                          ★ {place.reviewCite.rating.toFixed(1)}
+                        </span>
+                      )}
                       {place.reviewCite.author && <span>— {place.reviewCite.author}</span>}
-                      <a className="underline hover:text-white/90" href={place.reviewCite.url} target="_blank" rel="noreferrer">{place.reviewCite.source || domainOf(place.reviewCite.url)}</a>
-                      {place.reviewCite.date && <span>({place.reviewCite.date})</span>}
+                      <a
+                        className="underline hover:text-slate-50"
+                        href={place.reviewCite.url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {place.reviewCite.source || domainOf(place.reviewCite.url)}
+                      </a>
+                      {place.reviewCite.date && (
+                        <span>({place.reviewCite.date})</span>
+                      )}
                     </div>
                   </section>
                 )}
 
                 {place.score && (
-                  <section className="rounded-lg border-[2px] border-white/20 bg-white/[0.04] p-3">
-                    <header className="text-xs text-white/70">Scores</header>
-                    <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-white/85">
+                  <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
+                    <header className="text-xs text-slate-300/90">Scores</header>
+                    <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-slate-50">
                       <ScoreBar label="Overall" value={place.score.overall} />
                       <ScoreBar label="Bedside" value={place.score.bedside} />
                       <ScoreBar label="Cost" value={place.score.cost} />
                       <ScoreBar label="Wait" value={place.score.wait} />
                       <ScoreBar label="Distance" value={place.score.distance} />
                     </div>
-                    {place.scoreNotes && <p className="mt-2 text-xs text-white/70">{place.scoreNotes}</p>}
-                    {place.scoreSources?.length ? <div className="mt-2 flex flex-wrap gap-1.5">{place.scoreSources.map((c, i) => <CitationChip key={i} c={c} />)}</div> : null}
+                    {place.scoreNotes && (
+                      <p className="mt-2 text-xs text-slate-300/90">
+                        {place.scoreNotes}
+                      </p>
+                    )}
+                    {place.scoreSources?.length ? (
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {place.scoreSources.map((c, i) => (
+                          <CitationChip key={i} c={c} />
+                        ))}
+                      </div>
+                    ) : null}
                   </section>
                 )}
               </div>
 
               <div className="mt-3 flex flex-wrap gap-2">
-                {place.phone && (<a className="inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 px-4 py-2 text-sm text-white/90 hover:bg-white/10" href={`tel:${place.phone}`}>Call</a>)}
-                <button onClick={onCall} className="inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 px-4 py-2 text-sm text-white/90 hover:bg-white/10">Have us call</button>
-                <button onClick={onFollowUp} className="inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 px-4 py-2 text-sm text-white/90 hover:bg-white/10">+ Follow-up</button>
-                {place.maps && (<a className="inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 px-4 py-2 text-sm text-white/90 hover:bg-white/10" href={place.maps} target="_blank" rel="noreferrer">Directions</a>)}
-                {place.url && (<a className="inline-flex items-center gap-2 rounded-xl border-[2px] border-white/25 bg-white/5 px-4 py-2 text-sm text-white/90 hover:bg-white/10" href={place.url} target="_blank" rel="noreferrer">Website</a>)}
+                {place.phone && (
+                  <a
+                    className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 hover:bg-slate-800/90"
+                    href={`tel:${place.phone}`}
+                  >
+                    Call
+                  </a>
+                )}
+                <button
+                  onClick={onCall}
+                  className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 hover:bg-slate-800/90"
+                >
+                  Have us call
+                </button>
+                <button
+                  onClick={onFollowUp}
+                  className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 hover:bg-slate-800/90"
+                >
+                  + Follow-up
+                </button>
+                {place.maps && (
+                  <a
+                    className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 hover:bg-slate-800/90"
+                    href={place.maps}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Directions
+                  </a>
+                )}
+                {place.url && (
+                  <a
+                    className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 hover:bg-slate-800/90"
+                    href={place.url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Website
+                  </a>
+                )}
               </div>
             </div>
           </div>
@@ -1738,14 +3355,21 @@ function PlaceDrawer({ place, fullscreen, onToggleFullscreen, onClose, onCall, o
   )
 }
 
-/* ============================== Small UI Bits ============================== */
 function Stars({ value }: { value: number }) {
   const v = clamp(value, 0, 5)
   const pct = `${(v / 5) * 100}%`
   return (
-    <span className="relative inline-block align-middle" title={`${v.toFixed(1)}★`}>
-      <span className="text-white/30">★★★★★</span>
-      <span className="absolute left-0 top-0 overflow-hidden text-white/95" style={{ width: pct }}>★★★★★</span>
+    <span
+      className="relative inline-block align-middle"
+      title={`${v.toFixed(1)}★`}
+    >
+      <span className="text-slate-500/70">★★★★★</span>
+      <span
+        className="absolute left-0 top-0 overflow-hidden text-slate-50"
+        style={{ width: pct }}
+      >
+        ★★★★★
+      </span>
       <span className="sr-only">{v.toFixed(1)} stars</span>
     </span>
   )
@@ -1756,38 +3380,62 @@ function ScoreBar({ label, value }: { label: string; value?: number }) {
   const pct = `${clamp(value, 0, 5) * 20}%`
   return (
     <div>
-      <div className="flex items-center justify-between text-xs text-white/75 mb-1">
+      <div className="mb-1 flex items-center justify-between text-xs text-slate-300/90">
         <span>{label}</span>
         <span>{value.toFixed(1)}/5</span>
       </div>
-      <div className="h-1.5 rounded-full bg-white/12 overflow-hidden">
-        <div className="h-full bg-white/85" style={{ width: pct }} />
+      <div className="h-1.5 overflow-hidden rounded-full bg-slate-700/80">
+        <div className="h-full bg-slate-50" style={{ width: pct }} />
       </div>
     </div>
   )
 }
 
 /* ============================== Sources Panel ============================== */
-function SourcesPanel({ sources, onClose }: { sources: Citation[]; onClose: () => void }) {
+function SourcesPanel({
+  sources,
+  onClose,
+}: {
+  sources: Citation[]
+  onClose: () => void
+}) {
   return (
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="absolute right-0 top-0 h-full w-full max-w-md bg-[#0E223B]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/15">
+      <div className="absolute right-0 top-0 h-full w-full max-w-md bg-slate-950">
+        <div className="flex items-center justify-between border-b border-slate-700/80 px-5 py-4">
           <div>
-            <h3 className="text-white font-semibold">Session sources</h3>
-            <p className="text-[11px] text-white/65 mt-0.5">Trusted medical domains only.</p>
+            <h3 className="font-semibold text-slate-50">Session sources</h3>
+            <p className="mt-0.5 text-[11px] text-slate-300/90">
+              Trusted medical domains only.
+            </p>
           </div>
-          <button onClick={onClose} className="rounded-full pill px-3 py-1.5 text-white/90 hover:bg-white/10">Close</button>
+          <button
+            onClick={onClose}
+            className="pill rounded-full px-3 py-1.5 text-slate-100 hover:bg-slate-800/90"
+          >
+            Close
+          </button>
         </div>
-        <div className="p-5 space-y-3 overflow-y-auto h-[calc(100%-60px)]">
+        <div className="h-[calc(100%-60px)] space-y-3 overflow-y-auto p-5">
           {sources.length === 0 ? (
-            <p className="text-white/75 text-sm">No sources yet. As insights appear, you’ll see citations here from reputable medical domains.</p>
+            <p className="text-sm text-slate-200/90">
+              No sources yet. As insights appear, you’ll see citations here from reputable
+              medical domains.
+            </p>
           ) : (
             sources.map((s, i) => (
-              <a key={i} href={s.url} target="_blank" rel="noreferrer" className="block rounded-xl border-[2px] border-white/20 bg-white/[0.04] p-3 hover:bg-white/[0.08]">
-                <div className="text-white/90 text-sm font-medium">{s.title || s.url}</div>
-                <div className="text-white/70 text-xs mt-0.5">{s.url}</div>
+              <a
+                key={i}
+                href={s.url}
+                target="_blank"
+                rel="noreferrer"
+                className="block rounded-xl border-[2px] border-slate-700/80 bg-slate-900/85 p-3 hover:bg-slate-800/90"
+              >
+                <div className="text-sm font-medium text-slate-50">
+                  {s.title || s.url}
+                </div>
+                <div className="mt-0.5 text-xs text-slate-300/90">{s.url}</div>
               </a>
             ))
           )}
@@ -1799,53 +3447,115 @@ function SourcesPanel({ sources, onClose }: { sources: Citation[]; onClose: () =
 
 /* ============================== Follow-ups Panel ============================== */
 function FollowUpsPanel({
-  tasks, places, onClose, onToggleDone, onDelete, onUpdateDue
+  tasks,
+  places,
+  insights,
+  onClose,
+  onToggleDone,
+  onDelete,
+  onUpdateDue,
+  onOpenInsight,
 }: {
   tasks: Task[]
   places: Place[]
+  insights: InsightCard[]
   onClose: () => void
   onToggleDone: (id: string) => void
   onDelete: (id: string) => void
   onUpdateDue: (id: string, due?: string) => void
+  onOpenInsight: (id: string) => void
 }) {
-  function placeNameFor(id?: string) { return places.find(p => p.id === id)?.name }
+  function placeNameFor(id?: string) {
+    return places.find(p => p.id === id)?.name
+  }
+  function insightTitleFor(id?: string) {
+    return insights.find(i => i.id === id)?.title
+  }
+
   return (
     <div className="fixed inset-0 z-50">
       <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="absolute right-0 top-0 h-full w-full max-w-md bg-[#0E223B]">
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/15">
+      <div className="absolute right-0 top-0 h-full w-full max-w-md bg-slate-950">
+        <div className="flex items-center justify-between border-b border-slate-700/80 px-5 py-4">
           <div>
-            <h3 className="text-white font-semibold">Follow-ups</h3>
-            <p className="text-[11px] text-white/65 mt-0.5">Save actions, set a due time, and mark done.</p>
+            <h3 className="font-semibold text-slate-50">Follow-ups</h3>
+            <p className="mt-0.5 text-[11px] text-slate-300/90">
+              Save actions, set a due time, and mark done.
+            </p>
           </div>
-          <button onClick={onClose} className="rounded-full pill px-3 py-1.5 text-white/90 hover:bg-white/10">Close</button>
+          <button
+            onClick={onClose}
+            className="pill rounded-full px-3 py-1.5 text-slate-100 hover:bg-slate-800/90"
+          >
+            Close
+          </button>
         </div>
-        <div className="p-5 space-y-3 overflow-y-auto h-[calc(100%-60px)]">
+        <div className="h-[calc(100%-60px)] space-y-3 overflow-y-auto p-5">
           {tasks.length === 0 ? (
-            <p className="text-white/75 text-sm">No follow-ups yet. Add from insight cards or place rows.</p>
+            <p className="text-sm text-slate-200/90">
+              No follow-ups yet. Add from insight cards or place rows.
+            </p>
           ) : (
-            tasks.map((t) => (
-              <div key={t.id} className="rounded-xl border-[2px] border-white/20 bg-white/[0.05] p-3">
+            tasks.map(t => (
+              <div
+                key={t.id}
+                className="rounded-xl border-[2px] border-slate-700/80 bg-slate-900/85 p-3"
+              >
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex items-center gap-2">
-                      <input type="checkbox" checked={!!t.done} onChange={() => onToggleDone(t.id)} className="h-4 w-4" />
-                      <div className="text-white/90 font-medium truncate">{t.title}</div>
+                      <input
+                        type="checkbox"
+                        checked={!!t.done}
+                        onChange={() => onToggleDone(t.id)}
+                        className="h-4 w-4"
+                      />
+                      <div className="truncate font-medium text-slate-50">{t.title}</div>
                     </div>
                     {t.linkedPlaceId && (
-                      <div className="text-[11px] text-white/70 mt-1">Clinic: {placeNameFor(t.linkedPlaceId)}</div>
+                      <div className="mt-1 text-[11px] text-slate-300/90">
+                        Clinic: {placeNameFor(t.linkedPlaceId)}
+                      </div>
                     )}
-                    {t.notes && <p className="text-sm text-white/85 mt-1 whitespace-pre-wrap">{t.notes}</p>}
-                    <div className="mt-2 text-[11px] text-white/70">Created {new Date(t.createdAt || Date.now()).toLocaleString()}</div>
+                    {t.linkedInsightId && (
+                      <button
+                        type="button"
+                        onClick={() => onOpenInsight(t.linkedInsightId!)}
+                        className="mt-1 text-[11px] text-slate-200 underline-offset-2 hover:underline"
+                      >
+                        View insight: {insightTitleFor(t.linkedInsightId) || 'open card'}
+                      </button>
+                    )}
+                    {t.notes && (
+                      <p className="mt-1 whitespace-pre-wrap text-sm text-slate-50">
+                        {t.notes}
+                      </p>
+                    )}
+                    <div className="mt-2 text-[11px] text-slate-400">
+                      Created{' '}
+                      {new Date(t.createdAt || Date.now()).toLocaleString()}
+                    </div>
                   </div>
                   <div className="flex flex-col items-end gap-2">
                     <input
                       type="datetime-local"
-                      value={t.due ? new Date(t.due).toISOString().slice(0,16) : ''}
-                      onChange={(e) => onUpdateDue(t.id, e.target.value ? new Date(e.target.value).toISOString() : undefined)}
-                      className="rounded-md bg-white/10 border border-white/20 px-2 py-1 text-white/90 text-xs"
+                      value={t.due ? new Date(t.due).toISOString().slice(0, 16) : ''}
+                      onChange={e =>
+                        onUpdateDue(
+                          t.id,
+                          e.target.value
+                            ? new Date(e.target.value).toISOString()
+                            : undefined,
+                        )
+                      }
+                      className="rounded-md border border-slate-600/80 bg-slate-900/80 px-2 py-1 text-xs text-slate-100"
                     />
-                    <button onClick={() => onDelete(t.id)} className="text-[11px] text-white/75 hover:underline">Delete</button>
+                    <button
+                      onClick={() => onDelete(t.id)}
+                      className="text-[11px] text-slate-200 hover:underline"
+                    >
+                      Delete
+                    </button>
                   </div>
                 </div>
               </div>
