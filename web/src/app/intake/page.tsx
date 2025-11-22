@@ -3,6 +3,10 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { useSearchParams } from 'next/navigation'
+import { ProtectedRoute } from '@/components/protectedRoute'
+import { supabase } from '@/lib/supabaseClient'
+import { useRouter } from 'next/navigation'
+import { useAuth } from '@/lib/authProvider'
 
 /* ============================== Types ============================== */
 type Role = 'user' | 'assistant'
@@ -184,6 +188,56 @@ function fileToDataURL(file: File): Promise<string> {
   })
 }
 
+async function saveCallScriptAndConsent(opts: {
+  userId: string
+  clinicName: string
+  clinicPhone?: string
+  scriptText: string
+  scriptJson?: any
+}) {
+  const { userId, clinicName, clinicPhone, scriptText, scriptJson } = opts
+
+  // 1) Insert into call_scripts
+  const { data: scriptRow, error: scriptError } = await supabase
+    .from('call_scripts')
+    .insert({
+      user_id: userId,
+      clinic_name: clinicName,
+      clinic_phone: clinicPhone ?? null,
+      script_text: scriptText,
+      script_json: scriptJson ?? null,
+      status: 'approved',
+      approved_at: new Date().toISOString(),
+    })
+    .select('id')
+    .single()
+
+  if (scriptError || !scriptRow) {
+    console.error('Error inserting call_script:', scriptError)
+    throw new Error('Could not save call script')
+  }
+
+  const scriptId = scriptRow.id as string
+
+  // 2) Insert consent row
+  const consentText =
+    'User consented to an outbound call to this clinic using the approved script.'
+
+  const { error: consentError } = await supabase.from('consents').insert({
+    user_id: userId,
+    call_script_id: scriptId,
+    type: 'outbound_call',
+    text: consentText,
+  })
+
+  if (consentError) {
+    console.error('Error inserting consent:', consentError)
+    // not fatal for redirect; just log
+  }
+
+  return scriptId
+}
+
 function filterAllowed(cites?: Citation[]) {
   const seen = new Set<string>()
   return (cites || []).filter((ci) => {
@@ -287,6 +341,10 @@ export default function IntakePage() {
   const [placeFullscreen, setPlaceFullscreen] = useState(false)
 
   const [fullCard, setFullCard] = useState<InsightCard | null>(null)
+
+  const router = useRouter()
+  const { user } = useAuth()
+  const [savingScript, setSavingScript] = useState(false)
 
   const [evidenceLock, setEvidenceLock] = useState(true)
   const [hardEvidence, setHardEvidence] = useState(true)
@@ -410,6 +468,48 @@ export default function IntakePage() {
   const accent = BRAND_BLUE
   const outline = useMemo(() => outlineByRisk(risk), [risk])
   const glow = useMemo(() => glowByRisk(risk), [risk])
+
+  const maybeHandleScriptConsent = async (assistantText: string, metadata: {
+    clinicName?: string
+    clinicPhone?: string
+    scriptJson?: any
+  }) => {
+    if (!user) return // must be logged in
+
+    const approved = assistantText.includes('CALL_SCRIPT_APPROVED_AND_CONSENTED')
+    const draftIdx = assistantText.indexOf('CALL SCRIPT DRAFT:')
+
+    if (!approved || draftIdx === -1) {
+      return
+    }
+
+    // Extract the script text from after the marker
+    const scriptText = assistantText
+      .slice(draftIdx + 'CALL SCRIPT DRAFT:'.length)
+      .trim()
+
+    if (!scriptText) return
+
+    try {
+      setSavingScript(true)
+
+      const scriptId = await saveCallScriptAndConsent({
+        userId: user.id,
+        clinicName: metadata.clinicName ?? 'Clinic',
+        clinicPhone: metadata.clinicPhone,
+        scriptText,
+        scriptJson: metadata.scriptJson,
+      })
+
+      // Redirect to AI call page with scriptId
+      router.push(`/agent-caller?scriptId=${scriptId}`)
+    } catch (err) {
+      console.error(err)
+      // optionally surface an error toast or message
+    } finally {
+      setSavingScript(false)
+    }
+  }
 
   const sessionSources = useMemo(() => {
     const out: Citation[] = []
@@ -643,7 +743,9 @@ export default function IntakePage() {
       id: uid(),
       role: 'user',
       text: textValue || (imageFile ? '[Image uploaded]' : ''),
-      attachments: imageFile ? [{ kind: 'image', name: imageFile.name, preview: imagePreview || undefined }] : undefined,
+      attachments: imageFile
+        ? [{ kind: 'image', name: imageFile.name, preview: imagePreview || undefined }]
+        : undefined,
     }
     setMessages((m) => [...m, userMsg])
     if (textOverride === undefined) setDraft('')
@@ -688,6 +790,15 @@ export default function IntakePage() {
 
       const data: ChatResponse = await r.json()
 
+      // 👇 NEW: check if this message contains an approved + consented call script
+      // TRIAGE_SYSTEM_PROMPT is already set up to include markers like
+      // "CALL SCRIPT DRAFT:" and "CALL_SCRIPT_APPROVED_AND_CONSENTED"
+      await maybeHandleScriptConsent(data.text || '', {
+        clinicName: 'Clinic',          // you can later swap this for a real clinic name if you track it in state
+        clinicPhone: undefined,        // same for phone
+        scriptJson: data,              // optional: store the full JSON in script_json
+      })
+
       let finalCites = filterAllowed(data.citations)
       if (finalCites.length === 0) {
         finalCites = await backfillCitations(data.text || '')
@@ -696,21 +807,31 @@ export default function IntakePage() {
       if (hardEvidence && isDeclarative(data.text) && finalCites.length === 0) {
         const qs = pickNextQuestions(2)
         const gatherText = `I want to cite this properly. Quick details:\n• ${qs.join('\n• ')}`
-        setMessages((m) => m.map((mm) => (mm.id === aId ? { ...mm, text: gatherText } : mm)))
-        setGateMsg('Collecting details — I’ll synthesize with citations after we have enough signal.')
+        setMessages((m) =>
+          m.map((mm) => (mm.id === aId ? { ...mm, text: gatherText } : mm)),
+        )
+        setGateMsg(
+          'Collecting details — I’ll synthesize with citations after we have enough signal.',
+        )
         setSending(false)
         return
       }
 
       if (finalCites.length > 0) {
-        setMessages((m) => m.map((mm) => (mm.id === aId ? { ...mm, citations: finalCites } : mm)))
+        setMessages((m) =>
+          m.map((mm) => (mm.id === aId ? { ...mm, citations: finalCites } : mm)),
+        )
       } else if (isDeclarative(data.text)) {
-        setMessages((m) => m.map((mm) => (mm.id === aId ? { ...mm, citations: [] } : mm)))
+        setMessages((m) =>
+          m.map((mm) => (mm.id === aId ? { ...mm, citations: [] } : mm)),
+        )
       }
 
       if (Array.isArray(data.refImages) && data.refImages.length > 0) {
         setMessages((m) =>
-          m.map((mm) => (mm.id === aId ? { ...mm, refImages: data.refImages!.slice(0, 3) } : mm))
+          m.map((mm) =>
+            mm.id === aId ? { ...mm, refImages: data.refImages!.slice(0, 3) } : mm,
+          ),
         )
       }
 
@@ -719,7 +840,9 @@ export default function IntakePage() {
       if (data.risk) {
         setRisk((prev) => {
           const next = data.risk!
-          setRiskTrail((t) => (t.length && t[t.length - 1] === next ? t : [...t, next]))
+          setRiskTrail((t) =>
+            t.length && t[t.length - 1] === next ? t : [...t, next],
+          )
           return next
         })
       }
@@ -735,20 +858,26 @@ export default function IntakePage() {
 
       if (Array.isArray(data.places)) {
         setPlaces(data.places)
-      } else {
-        if (debug) {
-          setMessages((m) => [
-            ...m,
-            { id: uid(), role: 'assistant', text: 'No places[] returned by API. Cards depend on places[].' },
-          ])
-        }
+      } else if (debug) {
+        setMessages((m) => [
+          ...m,
+          {
+            id: uid(),
+            role: 'assistant',
+            text: 'No places[] returned by API. Cards depend on places[].',
+          },
+        ])
       }
     } catch (e: any) {
-      await typeFull(aId, `I couldn’t reach the medical engine. (${String(e?.message || e)})`)
+      await typeFull(
+        aId,
+        `I couldn’t reach the medical engine. (${String(e?.message || e)})`,
+      )
     } finally {
       setSending(false)
     }
   }
+
 
   function typeInto(id: string, chunk: string) {
     setMessages((m) => m.map((mm) => (mm.id === id ? { ...mm, text: (mm.text || '') + chunk } : mm)))
@@ -835,6 +964,7 @@ export default function IntakePage() {
   const bookingState = callViz.status
 
   return (
+    <ProtectedRoute>
     <main
       className="relative min-h-dvh text-white"
       style={{
@@ -1147,6 +1277,7 @@ export default function IntakePage() {
         }
       `}</style>
     </main>
+    </ProtectedRoute>
   )
 }
 

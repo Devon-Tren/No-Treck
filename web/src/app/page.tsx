@@ -1,339 +1,301 @@
-// File: src/app/page.tsx
 'use client'
 
-import Link from 'next/link'
-import { useEffect, useState, FormEvent } from 'react'
+import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { useAuth } from '@/lib/authProvider'
+import { Button } from '@/components/ui/button'
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Input } from '@/components/ui/input'
+import { Loader2 } from 'lucide-react'
 
-// ---------------- Splash: wordmark, fades out ----------------
-function SplashIntro({ onDone }: { onDone: () => void }) {
-  const [fade, setFade] = useState(false)
-
-  useEffect(() => {
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    const sitTime = reduced ? 0 : 1000
-    const fadeDur = reduced ? 0 : 600
-    const t1 = setTimeout(() => setFade(true), sitTime)
-    const t2 = setTimeout(() => onDone(), sitTime + fadeDur)
-    return () => { clearTimeout(t1); clearTimeout(t2) }
-  }, [onDone])
-
+function LogoNT() {
   return (
-    <div
-      aria-hidden
-      className={`fixed inset-0 z-50 flex items-center justify-center bg-[#0E5BD8] transition-opacity duration-700 ${fade ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
-    >
-      <div className="text-white font-extrabold tracking-tight italic text-6xl sm:text-7xl md:text-8xl select-none">
-        NO TREK
-      </div>
+    <div className="h-10 w-10 rounded-full bg-white/10 border border-blue-400/50 grid place-items-center shadow-md">
+      <span className="text-[#0E5BD8] font-extrabold text-sm tracking-tight">NT</span>
     </div>
   )
 }
 
-// ---------------- Trust / status chips ----------------
-function TrustChips() {
-  const chips = [
-    'Citations shown in results',
-    'Insurance & prices checked before booking',
-    'Clear escalation for red flags',
-  ]
-  return (
-    <ul className="mt-4 flex flex-wrap gap-2 text-xs text-white/90">
-      {chips.map((t) => (
-        <li key={t} className="rounded-full bg-white/10 px-3 py-1 ring-1 ring-white/20 backdrop-blur">
-          {t}
-        </li>
-      ))}
-    </ul>
-  )
-}
+export default function AuthLandingPage() {
+  const BRAND_BLUE = '#0E5BD8'
+  const [showSplash, setShowSplash] = useState(true)
 
-// ---------------- Prompt (left column) ----------------
-function PromptPanel() {
+  const { user, loading, signInWithEmailPass, signUpWithEmailPass } = useAuth()
   const router = useRouter()
-  const [q, setQ] = useState('')
-  const [msg, setMsg] = useState<string | null>(null)
 
-  function onSubmit(e: FormEvent) {
+  const [mode, setMode] = useState<'signin' | 'signup'>('signin')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
+
+  // If already logged in, go to home
+  useEffect(() => {
+    if (!loading && user) {
+      router.push('/home')
+    }
+  }, [loading, user, router])
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    const target = `/intake${q.trim() ? `?q=${encodeURIComponent(q.trim())}` : ''}`
-    router.push(target)
+    setError(null)
+    setSuccess(null)
+
+    const trimmedEmail = email.trim()
+
+    // Basic front-end guards before calling Supabase
+    if (!trimmedEmail || !password) {
+      setError('Email and password are required.')
+      return
+    }
+    if (password.length < 6) {
+      setError('Password must be at least 6 characters.')
+      return
+    }
+
+    setSubmitting(true)
+
+    try {
+      if (mode === 'signin') {
+        // SIGN IN: Supabase cross-checks email + password
+        const { error: authError } = await signInWithEmailPass(trimmedEmail, password)
+
+        if (authError) {
+          const msg = authError.message ?? 'Something went wrong.'
+          const lower = msg.toLowerCase()
+
+          if (lower.includes('invalid login credentials')) {
+            setError('Email or password is incorrect.')
+          } else {
+            setError(msg)
+          }
+          return
+        }
+
+        // Success: credentials correct, Supabase returned a session
+        setSuccess('Signed in successfully. Redirecting to your care map…')
+        router.push('/home')
+      } else {
+        // SIGN UP: creates a new user, but Supabase will error if email already exists
+        const { error: authError } = await signUpWithEmailPass(trimmedEmail, password)
+
+        if (authError) {
+          const msg = authError.message ?? 'Something went wrong.'
+          const lower = msg.toLowerCase()
+
+          if (
+            lower.includes('user already registered') ||
+            lower.includes('email already registered') ||
+            lower.includes('user already exists') ||
+            lower.includes('duplicate key')
+          ) {
+            setError("There’s already an account associated with this email. Try signing in instead.")
+          } else {
+            setError(msg)
+          }
+          return
+        }
+
+        // Success: user row created; usually requires email confirmation
+        setSuccess(
+          'Account created. A confirmation email will be sent to your email shortly. After confirming, you can sign in with your new password.'
+        )
+        setMode('signin')
+      }
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  const isDisabled =
+    submitting || !email.trim() || !password || password.length < 6
+
+  function SplashIntro({ onDone }: { onDone: () => void }) {
+    const [fade, setFade] = useState(false)
+    useEffect(() => {
+      const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const sitTime = reduced ? 0 : 1000
+      const fadeDur = reduced ? 0 : 600
+      const t1 = setTimeout(() => setFade(true), sitTime)
+      const t2 = setTimeout(() => onDone(), sitTime + fadeDur)
+      return () => { clearTimeout(t1); clearTimeout(t2) }
+    }, [onDone])
+  
+    return (
+      <div
+        aria-hidden
+        className={`fixed inset-0 z-50 grid place-items-center transition-opacity duration-700 ${fade ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
+        style={{ background: BRAND_BLUE }}
+      >
+        <div className="text-white font-extrabold tracking-tight italic text-6xl sm:text-7xl md:text-8xl select-none">
+          NO TREK
+        </div>
+      </div>
+    )
   }
 
   return (
-    <div className="relative min-h-[24rem] md:min-h-[26rem] rounded-3xl bg-white text-slate-900 shadow-2xl ring-1 ring-black/10 p-6 md:p-8 flex flex-col gap-6 backdrop-blur">
-      <div className="flex items-center justify-between">
-        <h2 className="text-3xl md:text-4xl font-extrabold tracking-tight">How can I help?</h2>
-        <span className="hidden sm:inline text-[11px] font-medium text-slate-500">
-          Evidence-based · Privacy first
-        </span>
-      </div>
+    <main className="min-h-screen bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 text-slate-50 flex items-center justify-center px-4">
+      {showSplash && <SplashIntro onDone={() => setShowSplash(false)} />}
+      <div className="max-w-5xl w-full grid gap-10 md:grid-cols-[1.2fr,1fr] items-center">
+        {/* Left: pitch / hero */}
+        <div className="space-y-6">
+          <div className="flex items-center gap-3">
+            <LogoNT />
+            <div>
+              <p className="text-xs uppercase tracking-[0.2em] text-blue-300/70">
+                No Trek
+              </p>
+              <p className="text-xs text-slate-400">
+                Care navigation, without the trek.
+              </p>
+            </div>
+          </div>
 
-      <form onSubmit={onSubmit} className="flex gap-3 w-full">
-        <label htmlFor="prompt" className="sr-only">Describe what’s going on</label>
-        <input
-          id="prompt"
-          value={q}
-          onChange={(e) => setQ(e.target.value)}
-          placeholder="Describe what's going on (e.g., “cut my foot”, “fever since yesterday”)"
-          className="flex-1 rounded-xl border border-slate-200 bg-white px-4 py-3 text-base text-slate-800 shadow-inner placeholder:text-slate-400 focus:outline-none focus:ring-4 focus:ring-blue-100"
-          aria-describedby="prompt-help"
-        />
-        <button
-          type="submit"
-          className="shrink-0 rounded-xl bg-blue-600 px-5 py-3 text-white font-semibold cursor-pointer shadow-lg transition hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200"
-        >
-          Get my plan
-        </button>
-      </form>
+          <div className="space-y-4">
+            <h1 className="text-3xl md:text-4xl font-semibold tracking-tight">
+              Log in to your{' '}
+              <span className="text-[#0E5BD8]">living care map</span>.
+            </h1>
+            <p className="text-sm md:text-base text-slate-300 max-w-xl">
+              Create a secure No Trek account to track symptoms, next steps,
+              and calls we can place on your behalf. Your credentials stay
+              encrypted and never shared with clinics or employers.
+            </p>
+          </div>
 
-      <p id="prompt-help" className="text-xs text-slate-500 -mt-3">Press Enter to continue</p>
-
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
-        {[
-          'Check wait times near me',
-          'Who takes my insurance?',
-          'How much could this cost?',
-        ].map((s) => (
-          <button
-            key={s}
-            type="button"
-            onClick={() => setQ(s)}
-            className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-slate-700 hover:bg-slate-100 text-left focus:outline-none focus:ring-2 focus:ring-blue-200"
-          >
-            {s}
-          </button>
-        ))}
-      </div>
-
-      <div className="mt-auto grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs text-slate-600">
-        <div className="rounded-lg bg-slate-50 px-3 py-2">Scam Shield: flags upsell add-ons</div>
-        <div className="rounded-lg bg-slate-50 px-3 py-2">Insurance & price verified pre-booking</div>
-        <div className="rounded-lg bg-slate-50 px-3 py-2">Escalation to humans when needed</div>
-      </div>
-
-      <div className="sr-only" aria-live="polite">{msg}</div>
-    </div>
-  )
-}
-
-// ---------------- Cards ----------------
-type Card = { title: string; href: string; desc?: string; analytics?: string }
-
-/** 2×2 grid that stretches to match the left panel’s height; each card shows a hover blurb */
-function PrimaryCardGrid({ cards }: { cards: Card[] }) {
-  // mouse-follow shimmer
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      document.querySelectorAll<HTMLAnchorElement>('a.feature-card').forEach((el) => {
-        const r = el.getBoundingClientRect()
-        const x = e.clientX - r.left
-        const y = e.clientY - r.top
-        el.style.setProperty('--x', x + 'px')
-        el.style.setProperty('--y', y + 'px')
-      })
-    }
-    document.addEventListener('mousemove', handler)
-    return () => document.removeEventListener('mousemove', handler)
-  }, [])
-
-  return (
-    <div className="h-full">
-      <div className="grid h-full grid-rows-2 sm:grid-cols-2 sm:grid-rows-2 gap-3">
-        {cards.map((c, i) => (
-          <Link
-            key={c.title}
-            href={c.href}
-            data-analytics={c.analytics}
-            aria-describedby={c.desc ? `card-desc-${i}` : undefined}
-            className="feature-card relative h-full overflow-hidden rounded-2xl border border-white/15 bg-white/5 p-5 transition hover:-translate-y-[2px] hover:border-white/30 hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60 flex flex-col"
-          >
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-0 opacity-0 transition"
-              style={{
-                background:
-                  'radial-gradient(500px circle at var(--x,50%) var(--y,50%), rgba(255,255,255,0.14), transparent 40%)',
-              }}
-            />
-            <h3 className="text-lg font-semibold">{c.title}</h3>
-
-            {/* hover blurb */}
-            {c.desc && (
-              <>
-                <p id={`card-desc-${i}`} className="sr-only">{c.desc}</p>
-                <div className="mt-auto text-[13px] text-white/90 opacity-0 translate-y-1 transition duration-200 ease-out hover:opacity-100 hover:translate-y-0 focus-within:opacity-100 focus-within:translate-y-0">
-                  {c.desc}
-                </div>
-              </>
-            )}
-
-            <span className="mt-3 inline-block text-sm text-white/90">Open →</span>
-          </Link>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function SimpleTwoUp({ cards }: { cards: Card[] }) {
-  return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      {cards.map((c, i) => (
-        <Link
-          key={c.title}
-          href={c.href}
-          aria-describedby={c.desc ? `learn-desc-${i}` : undefined}
-          className="feature-card relative overflow-hidden rounded-2xl border border-white/15 bg-white/5 p-5 transition hover:-translate-y-[2px] hover:border-white/30 hover:bg-white/10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
-        >
-          <h3 className="text-base font-semibold">{c.title}</h3>
-          {c.desc && (
-            <>
-              <p id={`learn-desc-${i}`} className="sr-only">{c.desc}</p>
-              <div className="mt-2 text-[13px] text-white/90 opacity-0 translate-y-1 transition duration-200 ease-out hover:opacity-100 hover:translate-y-0 focus-within:opacity-100 focus-within:translate-y-0">
-                {c.desc}
-              </div>
-            </>
-          )}
-          <span className="mt-3 inline-block text-sm text-white/90">Open →</span>
-        </Link>
-      ))}
-    </div>
-  )
-}
-
-// ---------------- Page ----------------
-export default function Home() {
-  const [splashDone, setSplashDone] = useState(false)
-
-  // Primary (with blurbs)
-  const primaryCards: Card[] = [
-    {
-      title: 'Get care now',
-      href: '/intake',
-      analytics: 'card_get_care',
-      desc: 'Triage with citations; see self-care vs in-person options, costs, in-network, and waits.',
-    },
-    {
-      title: 'Costs & coverage',
-      href: '/coverage',
-      analytics: 'card_costs_coverage',
-      desc: 'Check in-network status and estimated out-of-pocket. See cheaper alternatives.',
-    },
-    {
-      title: 'Have us call & book',
-      href: '/agent-caller',
-      analytics: 'card_call_book',
-      desc: 'We draft the script, you approve, we handle the call and log the outcome.',
-    },
-    {
-      title: 'Tasks & follow-ups',
-      href: '/tasks',
-      analytics: 'card_tasks',
-      desc: 'Reminders, forms, after-care, receipts—so you can finish and feel done.',
-    },
-  ]
-
-  // Learn (half + half under the left panel)
-  const learnCards: Card[] = [
-    {
-      title: 'Know the Importance',
-      href: '/importance',
-      desc: 'Understand common injuries and why early action matters—every claim is cited.',
-    },
-    {
-      title: 'About Us',
-      href: '/about',
-      desc: 'Why we built No Trek and the outcomes we aim to improve.',
-    },
-  ]
-
-  return (
-    <main className="min-h-screen text-white relative">
-      {/* Background */}
-      <div className="absolute inset-0 -z-10 bg-gradient-to-b from-[#0E5BD8] via-[#0A53C5] to-[#083F98]" />
-      <div
-        aria-hidden
-        className="absolute inset-0 -z-10 opacity-50"
-        style={{
-          background:
-            'radial-gradient(1200px 600px at 80% -10%, rgba(255,255,255,0.18), rgba(255,255,255,0) 60%), radial-gradient(800px 400px at 10% 110%, rgba(255,255,255,0.10), rgba(255,255,255,0) 60%)'
-        }}
-      />
-
-      {!splashDone && <SplashIntro onDone={() => setSplashDone(true)} />}
-
-      {/* Emergency banner */}
-      <div className={`transition-opacity duration-700 ${splashDone ? 'opacity-100' : 'opacity-0'}`}>
-        <div className="bg-black/20 backdrop-blur-sm text-[13px] text-white/90">
-          <div className="mx-auto max-w-6xl px-6 py-2">
-            If this is an emergency, call 911 or your local emergency number.
+          {/* Feature strip */}
+          <div className="grid gap-3 md:grid-cols-3 text-xs">
+            <div className="rounded-2xl border border-blue-500/40 bg-slate-900/40 px-3 py-3 shadow-[0_0_25px_rgba(37,99,235,0.35)]">
+              <p className="font-medium text-slate-50">Professional triage</p>
+              <p className="text-slate-400 mt-1">
+                Medical guidance and recommendations cited from credible sources.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-700 bg-slate-900/40 px-3 py-3 shadow-[0_0_25px_rgba(37,99,235,0.35)]">
+              <p className="font-medium text-slate-50">Care options</p>
+              <p className="text-slate-400 mt-1">
+                Clinics and tasks organized into a living care plan.
+              </p>
+            </div>
+            <div className="rounded-2xl border border-slate-700 bg-slate-900/40 px-3 py-3 shadow-[0_0_25px_rgba(37,99,235,0.35)]">
+              <p className="font-medium text-slate-50">AI calls</p>
+              <p className="text-slate-400 mt-1">
+                Optional scripted calls to clinics, with your consent.
+              </p>
+            </div>
           </div>
         </div>
 
-        <div className="mx-auto max-w-6xl px-6 py-14">
-          {/* Header */}
-          <header className="mb-10">
-            <div className="flex items-end justify-between gap-4">
-              <div>
-                <p className="text-xs sm:text-sm text-white/80">Medical-first AI concierge</p>
-                <h1 className="mt-2 text-4xl sm:text-6xl font-extrabold tracking-tight italic">No Trek</h1>
-                <p className="mt-4 max-w-2xl text-white/90">
-                  Give us the destination—we’ll make the journey simple. Clear guidance with citations, transparent costs,
-                  and hands-on help to book care and follow through.
+        {/* Right: auth card */}
+        <Card className="bg-slate-900/70 border-slate-700/80 backdrop-blur-xl shadow-xl rounded-3xl">
+          <CardHeader className="space-y-1">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-lg text-white font-semibold">
+                {mode === 'signin' ? 'Sign in to continue' : 'Create your account'}
+              </CardTitle>
+              <button
+                type="button"
+                className="text-[11px] text-blue-300 cursor-pointer hover:text-blue-200 underline-offset-2 hover:underline"
+                onClick={() => {
+                  setError(null)
+                  setSuccess(null)
+                  setMode(mode === 'signin' ? 'signup' : 'signin')
+                }}
+              >
+                {mode === 'signin'
+                  ? "New here? Create account"
+                  : 'Already have one? Sign in'}
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-400">
+              Use your email and a strong password to access No Trek.
+            </p>
+          </CardHeader>
+
+          <CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <div className="space-y-2">
+                <label
+                  className="text-xs font-medium text-slate-300"
+                  htmlFor="email"
+                >
+                  Email
+                </label>
+                <Input
+                  id="email"
+                  type="email"
+                  required
+                  autoComplete="email"
+                  placeholder="you@example.com"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  className="bg-slate-950/40 border-slate-600 focus-visible:ring-[#0E5BD8] text-sm text-white rounded-2xl"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label
+                  className="text-xs font-medium text-slate-300"
+                  htmlFor="password"
+                >
+                  Password
+                  <span className="ml-1 text-[10px] text-slate-500">
+                    (min 6 characters)
+                  </span>
+                </label>
+                <Input
+                  id="password"
+                  type="password"
+                  required
+                  autoComplete={
+                    mode === 'signin'
+                      ? 'current-password'
+                      : 'new-password'
+                  }
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="bg-slate-950/40 border-slate-600 focus-visible:ring-[#0E5BD8] text-white text-sm rounded-2xl"
+                />
+              </div>
+
+              <Button
+                type="submit"
+                disabled={isDisabled}
+                className="w-full rounded-2xl bg-[#0E5BD8] hover:bg-[#0b4cbc] text-sm cursor-pointer font-semibold flex items-center justify-center gap-2"
+              >
+                {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+                {mode === 'signin' ? 'Sign in' : 'Create account'}
+              </Button>
+
+              {error && (
+                <p className="text-xs text-red-400 bg-red-950/40 border border-red-700/60 rounded-2xl px-3 py-2">
+                  {error}
+                </p>
+              )}
+              {success && (
+                <p className="text-xs text-emerald-400 bg-emerald-950/40 border border-emerald-700/60 rounded-2xl px-3 py-2">
+                  {success}
+                </p>
+              )}
+
+              <div className="pt-3 border-t border-slate-800 mt-4 space-y-2">
+                <p className="text-[11px] text-slate-500">
+                  By continuing, you agree to No Trek&apos;s privacy and data
+                  usage policies. We don&apos;t share your information with
+                  employers or insurers.
+                </p>
+                <p className="text-[11px] text-slate-500">
+                  For safety, avoid entering full names or identifiers for other
+                  people unless needed for scheduling.
                 </p>
               </div>
-              <Link
-                href="/explore"
-                className="hidden sm:inline rounded-2xl px-4 py-2 border border-white/30 text-white hover:border-white transition"
-              >
-                Explore features
-              </Link>
-            </div>
-            <TrustChips />
-            <div className="mt-6 flex flex-wrap gap-3">
-              <Link
-                href="/intake"
-                className="rounded-2xl px-5 py-3 bg-white text-slate-900 font-medium shadow hover:shadow-lg transition focus:outline-none focus:ring-4 focus:ring-white/40"
-              >
-                Start triage
-              </Link>
-              <Link
-                href="/privacy"
-                className="rounded-2xl px-5 py-3 border border-white/30 text-white hover:border-white transition focus:outline-none focus:ring-4 focus:ring-white/30"
-              >
-                Privacy & consent
-              </Link>
-            </div>
-          </header>
-
-          {/* Two-column: prompt left, 2×2 cards right, heights matched */}
-          <div className="grid gap-6 lg:grid-cols-5 items-stretch">
-            {/* Left */}
-            <div className="lg:col-span-3 order-1">
-              <PromptPanel />
-            </div>
-            {/* Right: NO outer box; grid fills full height */}
-            <div className="lg:col-span-2 order-2">
-              <PrimaryCardGrid cards={primaryCards} />
-            </div>
-          </div>
-
-          {/* Learn under the left panel only; each half width so together match the left panel width */}
-          <div className="grid gap-6 lg:grid-cols-5 items-start mt-6">
-            <div className="lg:col-span-3 order-1">
-              <SimpleTwoUp cards={learnCards} />
-            </div>
-          </div>
-
-          {/* Footer disclaimer */}
-          <footer className="mt-12 text-[12px] text-white/80">
-            <div className="rounded-2xl bg-white/5 px-4 py-3 ring-1 ring-white/15 backdrop-blur">
-              No Trek provides information and logistics support and does not replace licensed clinicians.
-              We show citations and last-updated timestamps in results. No ads; you control your data.
-            </div>
-          </footer>
-        </div>
+            </form>
+          </CardContent>
+        </Card>
       </div>
     </main>
   )

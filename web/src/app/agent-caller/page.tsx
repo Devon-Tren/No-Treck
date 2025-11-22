@@ -20,7 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
+
 import { cn } from "@/lib/utils";
 
 // Shared card blue from homepage
@@ -51,22 +51,11 @@ function HeaderNT() {
 
 // ---- Types
 export type CallScript = {
-  id: string;
-  contactName?: string;
-  targetPhone?: string;
-  reason: string;
-  language?: string;
-  requiresInterpreter?: boolean;
-  insurance?: { payer?: string; memberId?: string };
-  patient?: {
-    name?: string;
-    dob?: string;
-    callback?: string;
-    consentTimestamp?: string;
-  };
-  notes?: string;
-  body: string;
-};
+  id: string
+  clinic_name: string
+  clinic_phone: string | null
+  script_text: string
+}
 
 export type CallLog = {
   id: string;
@@ -84,6 +73,7 @@ export type SummaryCard = {
   header: string; // e.g., "John Hopkins Hospital 11/10/2025 — Outgoing at 2:28:09 PM CST"
   body: string; // the summary text
 };
+
 
 // ---- Simulated telephony adapter (for UI dev only)
 function useMockTelephony() {

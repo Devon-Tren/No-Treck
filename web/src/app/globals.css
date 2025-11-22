@@ -119,3 +119,13 @@
     @apply bg-background text-foreground;
   }
 }
+
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  /* Force your dark background instead of the white/yellow autofill */
+  box-shadow: 0 0 0 1000px #020617 inset; /* matches bg-slate-950-ish */
+  -webkit-text-fill-color: #f9fafb;       /* near white text */
+  transition: background-color 9999s ease-out;
+}
+
