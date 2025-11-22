@@ -10,8 +10,52 @@ export const metadata: Metadata = {
 
 export default function PrivacyPage() {
   return (
-    <main className="min-h-screen bg-slate-950 text-slate-50">
-      <div className="mx-auto max-w-4xl px-4 py-12 lg:px-8 lg:py-16">
+    <main className="relative min-h-screen overflow-hidden bg-slate-950 text-slate-50">
+      {/* Background – match app aesthetic */}
+      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+        <div className="absolute -top-40 -right-32 h-80 w-80 rounded-full bg-[#0E5BD8]/25 blur-3xl animate-[pulse_14s_ease-in-out_infinite]" />
+        <div className="absolute top-1/3 -left-40 h-96 w-96 rotate-12 bg-gradient-to-tr from-[#0E5BD8]/20 via-sky-500/10 to-transparent blur-3xl animate-[spin_50s_linear_infinite]" />
+        <div className="absolute bottom-[-20%] right-[-10%] h-72 w-72 rounded-full bg-sky-400/15 blur-3xl animate-[pulse_18s_ease-in-out_infinite]" />
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(15,23,42,0)_0,_#020617_55%)]" />
+      </div>
+
+      <div className="relative mx-auto max-w-4xl px-4 py-10 lg:px-8 lg:py-16">
+        {/* Top nav */}
+        <nav className="mb-8 flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/80 px-3 sm:px-4 py-2.5 sm:py-3 backdrop-blur">
+          <Link href="/" className="flex items-center gap-2 text-slate-100">
+            <div className="h-7 w-7 rounded-full bg-[#0E5BD8]/80 shadow-[0_0_20px_rgba(37,99,235,0.7)]" />
+            <span className="text-sm font-semibold tracking-tight">
+              NO <span className="font-extrabold italic">TREK</span>
+            </span>
+          </Link>
+          <div className="flex items-center gap-1.5 sm:gap-2 text-xs sm:text-sm">
+            <Link
+              href="/"
+              className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+            >
+              Home
+            </Link>
+            <Link
+              href="/intake"
+              className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+            >
+              Intake
+            </Link>
+            <Link
+              href="/tasks"
+              className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+            >
+              Tasks
+            </Link>
+            <Link
+              href="/privacy"
+              className="rounded-full border border-slate-200/70 bg-slate-100/10 px-3 py-1.5 text-slate-50"
+            >
+              Privacy
+            </Link>
+          </div>
+        </nav>
+
         {/* Header */}
         <header className="mb-10">
           <p className="text-[10px] font-semibold tracking-[0.25em] text-sky-300/80">

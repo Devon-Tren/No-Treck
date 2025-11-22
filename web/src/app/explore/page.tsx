@@ -146,14 +146,46 @@ export default function ExplorePage() {
       <EmergencyBanner />
 
       <div className="mx-auto max-w-6xl px-4 pb-20 pt-10 lg:px-8 lg:pt-14">
-        {/* Breadcrumb / nav */}
-        <nav className="text-xs text-slate-400">
-          <Link
-            href="/"
-            className="inline-flex items-center gap-1 rounded-full border border-slate-800/80 bg-slate-950/80 px-3 py-1.5 text-[11px] text-slate-200 hover:border-sky-400/70 hover:text-sky-100"
-          >
-            ← Back to home
+        {/* Top nav bar */}
+        <nav className="mb-8 flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/80 px-3 py-2.5 text-xs sm:px-4 sm:py-3 sm:text-sm backdrop-blur">
+          <Link href="/" className="flex items-center gap-2 text-slate-100">
+            <div className="h-7 w-7 rounded-full bg-[#0E5BD8]/80 shadow-[0_0_20px_rgba(37,99,235,0.7)]" />
+            <span className="text-sm font-semibold tracking-tight">
+              NO <span className="font-extrabold italic">TREK</span>
+            </span>
           </Link>
+          <div className="flex items-center gap-1.5 sm:gap-2">
+            <Link
+              href="/"
+              className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+            >
+              Home
+            </Link>
+            <Link
+              href="/explore"
+              className="rounded-full border border-slate-200/70 bg-slate-100/10 px-3 py-1.5 text-slate-50"
+            >
+              Explore
+            </Link>
+            <Link
+              href="/intake"
+              className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+            >
+              Intake
+            </Link>
+            <Link
+              href="/tasks"
+              className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+            >
+              Tasks
+            </Link>
+            <Link
+              href="/privacy"
+              className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+            >
+              Privacy
+            </Link>
+          </div>
         </nav>
 
         {/* Hero */}

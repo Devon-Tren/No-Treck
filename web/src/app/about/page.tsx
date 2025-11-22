@@ -63,33 +63,54 @@ export default function AboutPage() {
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(15,23,42,0)_0,_#020617_55%)]" />
       </div>
 
-      {/* Header */}
+      {/* Top nav bar */}
       <header className="sticky top-0 z-20 border-b border-slate-800/60 bg-slate-950/80 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 lg:px-6">
-          <div className="flex items-center gap-3">
-            <LogoNT />
-            <div className="flex flex-col">
-              <span className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
-                No Trek
+        <div className="mx-auto max-w-6xl px-4 py-3 lg:px-6">
+          <nav className="flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/80 px-3 py-2.5 text-xs sm:px-4 sm:py-3 sm:text-sm">
+            <Link href="/" className="flex items-center gap-2 text-slate-100">
+              <LogoNT />
+              <span className="text-sm font-semibold tracking-tight">
+                NO <span className="font-extrabold italic">TREK</span>
               </span>
-              <span className="text-sm font-medium text-slate-100">
-                About the team
-              </span>
-            </div>
-          </div>
-          <nav className="flex items-center gap-4 text-xs sm:text-sm">
-            <Link
-              href="/"
-              className="rounded-full border border-slate-700/70 px-3 py-1.5 text-slate-200/90 shadow-sm shadow-black/30 transition hover:border-slate-500 hover:bg-slate-900/80"
-            >
-              Back to home
             </Link>
-            <a
-              href="#stories"
-              className="hidden rounded-full bg-[#0E5BD8]/90 px-3 py-1.5 text-xs font-medium text-white shadow-lg shadow-sky-900/60 transition hover:bg-[#1661e0] sm:inline-flex"
-            >
-              Read our stories
-            </a>
+            <div className="flex items-center gap-1.5 sm:gap-2">
+              <Link
+                href="/"
+                className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+              >
+                Home
+              </Link>
+              <Link
+                href="/explore"
+                className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+              >
+                Explore
+              </Link>
+              <Link
+                href="/intake"
+                className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+              >
+                Intake
+              </Link>
+              <Link
+                href="/tasks"
+                className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+              >
+                Tasks
+              </Link>
+              <Link
+                href="/privacy"
+                className="rounded-full border border-transparent px-3 py-1.5 text-slate-300 hover:border-slate-600 hover:bg-slate-900 hover:text-slate-50"
+              >
+                Privacy
+              </Link>
+              <Link
+                href="/about"
+                className="rounded-full border border-slate-200/70 bg-slate-100/10 px-3 py-1.5 text-slate-50"
+              >
+                About
+              </Link>
+            </div>
           </nav>
         </div>
       </header>
@@ -199,7 +220,7 @@ export default function AboutPage() {
       {/* SECTION 2: Story & Founders (full screen, 2 columns) */}
       <section
         id="stories"
-        className="flex min-h-screen items-center border-top border-slate-800/80 bg-slate-950/95"
+        className="flex min-h-screen items-center border-t border-slate-800/80 bg-slate-950/95"
       >
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-12 px-4 py-12 lg:flex-row lg:items-start lg:gap-16 lg:px-6 lg:py-20">
           {/* Left column: combined story */}

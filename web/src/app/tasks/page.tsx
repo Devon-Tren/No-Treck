@@ -3,6 +3,7 @@
 
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 
 /* ============================== Types ============================== */
 type RiskTone = 'low' | 'moderate' | 'elevated' | 'severe' | string
@@ -653,6 +654,9 @@ export default function TasksPage() {
           splashDone ? 'opacity-100' : 'opacity-0'
         }`}
       >
+        {/* Global nav */}
+        <SiteNav />
+
         {/* Header */}
         <header className="flex flex-wrap items-start justify-between gap-4">
           <div className="space-y-2">
@@ -1363,6 +1367,7 @@ export default function TasksPage() {
 }
 
 /* ============================== Bits ============================== */
+
 function TaskGroup({
   title,
   empty,
@@ -1452,5 +1457,60 @@ function TaskGroup({
         ))}
       </ul>
     </section>
+  )
+}
+
+function SiteNav() {
+  const pathname = usePathname()
+
+  const baseLink =
+    'rounded-full px-3 py-1.5 text-xs sm:text-sm transition-colors border'
+
+  const isActive = (href: string) => pathname === href
+
+  return (
+    <nav className="mb-6 flex items-center justify-between rounded-2xl border border-slate-800 bg-slate-950/80 px-3 sm:px-4 py-2.5 sm:py-3 backdrop-blur hover-card">
+      <Link href="/" className="flex items-center gap-2 text-slate-100">
+        <div className="h-7 w-7 rounded-full bg-[var(--brand-blue)]/80 shadow-[0_0_20px_rgba(37,99,235,0.7)]" />
+        <span className="text-sm font-semibold tracking-tight">
+          NO <span className="font-extrabold italic">TREK</span>
+        </span>
+      </Link>
+      <div className="flex items-center gap-1.5 sm:gap-2">
+        <Link
+          href="/"
+          className={clsx(
+            baseLink,
+            isActive('/')
+              ? 'border-slate-100 bg-slate-100/10 text-slate-50'
+              : 'border-transparent text-slate-300 hover:bg-slate-900',
+          )}
+        >
+          Home
+        </Link>
+        <Link
+          href="/intake"
+          className={clsx(
+            baseLink,
+            isActive('/intake')
+              ? 'border-slate-100 bg-slate-100/10 text-slate-50'
+              : 'border-transparent text-slate-300 hover:bg-slate-900',
+          )}
+        >
+          Intake
+        </Link>
+        <Link
+          href="/tasks"
+          className={clsx(
+            baseLink,
+            isActive('/tasks')
+              ? 'border-slate-100 bg-slate-100/10 text-slate-50'
+              : 'border-transparent text-slate-300 hover:bg-slate-900',
+          )}
+        >
+          Tasks
+        </Link>
+      </div>
+    </nav>
   )
 }

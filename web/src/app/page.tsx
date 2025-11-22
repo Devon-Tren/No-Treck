@@ -103,6 +103,7 @@ export default function Home() {
           splashDone ? 'opacity-100' : 'opacity-0'
         }`}
       >
+        <NavBar />
         <EmergencyBanner />
 
         <div className="mx-auto flex max-w-6xl flex-col gap-16 px-4 pb-20 pt-10 lg:px-8 lg:pt-14">
@@ -137,7 +138,70 @@ export default function Home() {
   )
 }
 
-/* ============================== Sections ============================== */
+/* ============================== Nav & Top Banner ============================== */
+
+function NavBar() {
+  const navLinks = [
+    { href: '/', label: 'Home' },
+    { href: '/intake', label: 'Intake' },
+    { href: '/tasks', label: 'Tasks' },
+    { href: '/about', label: 'About' },
+    { href: '/privacy', label: 'Privacy' },
+  ]
+
+  return (
+    <header className="border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-sm shadow-[0_8px_30px_rgba(15,23,42,0.85)]">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 lg:px-8">
+        {/* Brand / wordmark */}
+        <Link href="/" className="flex items-center gap-2">
+          <div className="grid h-8 w-8 place-items-center rounded-full bg-sky-500/95 text-[11px] font-black tracking-tight text-slate-950 shadow-[0_0_20px_rgba(56,189,248,0.9)]">
+            NT
+          </div>
+          <span className="text-xs font-semibold tracking-[0.26em] text-slate-100">
+            NO TREK
+          </span>
+        </Link>
+
+        {/* Desktop nav + CTA */}
+        <nav className="flex items-center gap-4">
+          <div className="hidden items-center gap-4 md:flex">
+            {navLinks.map((link) => (
+              <Link
+                key={link.href}
+                href={link.href}
+                className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-200/85 transition-colors hover:text-sky-300"
+              >
+                {link.label}
+              </Link>
+            ))}
+          </div>
+
+          <Link
+            href="/intake"
+            className="rounded-2xl bg-sky-500 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-950 shadow-[0_0_26px_rgba(56,189,248,0.9)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_40px_rgba(56,189,248,1)]"
+          >
+            Start with Stella
+          </Link>
+        </nav>
+      </div>
+
+      {/* Mobile nav row */}
+      <div className="border-t border-slate-800/80 bg-slate-950/95 px-4 py-2 md:hidden">
+        <div className="mx-auto flex max-w-6xl flex-wrap gap-3">
+          {navLinks.map((link) => (
+            <Link
+              key={link.href}
+              href={link.href}
+              className="rounded-full border border-slate-700/80 bg-slate-900/80 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-200/90"
+            >
+              {link.label}
+            </Link>
+          ))}
+        </div>
+      </div>
+    </header>
+  )
+}
 
 function EmergencyBanner() {
   return (
@@ -151,6 +215,8 @@ function EmergencyBanner() {
     </div>
   )
 }
+
+/* ============================== Sections ============================== */
 
 function HeroSection() {
   const [tilt, setTilt] = useState<{ x: number; y: number }>({ x: 0, y: 0 })
@@ -207,7 +273,7 @@ function HeroSection() {
         </div>
 
         {/* Right-side CTAs */}
-        <div className="flex flex-col items-stretch gap-3 lg:items-end lg:min-w-[260px]">
+        <div className="flex flex-col items-stretch gap-3 lg:min-w-[260px] lg:items-end">
           {/* Primary CTA */}
           <Link
             href="/intake"
@@ -243,54 +309,59 @@ function HeroSection() {
   )
 }
 
-
 function StellaOverviewSection() {
   return (
     <section className="grid gap-10 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,1fr)] lg:items-center">
       {/* Text side */}
       <div className="space-y-4">
-      <h2 className="text-2xl font-semibold text-slate-50 sm:text-3xl">
-  Meet Stella, the on-your-side companion for the moments you don't know what to do next.
-</h2>
+        <h2 className="text-2xl font-semibold text-slate-50 sm:text-3xl">
+          Meet Stella, the on-your-side companion for the moments you don&apos;t know what to do
+          next.
+        </h2>
 
-<p className="mt-3 text-sm leading-relaxed text-slate-300">
-  Stella is the first presence you meet here in No Trek. She doesn’t just point you at a clinician and disappear.
-  She stays with you through the whole “I should probably deal with this” arc — helping you put words to what’s
-  going on, understand your options, and choose what fits your real life, not an ideal one.
-</p>
+        <p className="mt-3 text-sm leading-relaxed text-slate-300">
+          Stella is the first presence you meet here in No Trek. She doesn&apos;t just point you at
+          a clinician and disappear. She stays with you through the whole “I should probably deal
+          with this” arc — helping you put words to what&apos;s going on, understand your options,
+          and choose what fits your real life, not an ideal one.
+        </p>
 
-<ul className="mt-3 space-y-2 text-sm text-slate-300/95">
-  <li className="flex gap-2">
-    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]" />
-    <span>
-      On your side emotionally — listening without judgment when you’re scared, confused, or just tired of dealing with it.
-    </span>
-  </li>
-  <li className="flex gap-2">
-    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(34,211,238,0.8)]" />
-    <span>
-      On your side practically — turning scattered symptoms, paperwork, and “I’ll do it later” tasks into a clear, doable plan.
-    </span>
-  </li>
-  <li className="flex gap-2">
-    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_10px_rgba(52,211,153,0.8)]" />
-    <span>
-      On your side financially — helping you avoid unnecessary visits and surprise bills by making costs and trade-offs visible up front.
-    </span>
-  </li>
-  <li className="flex gap-2">
-    <span className="mt-1 h-1.5 w-1.5 rounded-full bg-sky-200 shadow-[0_0_10px_rgba(191,219,254,0.9)]" />
-    <span>
-      On your side over time — keeping track of what you’ve tried, what worked, and what’s next, so you don’t have to hold it all in your head.
-    </span>
-  </li>
-</ul>
+        <ul className="mt-3 space-y-2 text-sm text-slate-300/95">
+          <li className="flex gap-2">
+            <span className="mt-1 h-1.5 w-1.5 rounded-full bg-sky-400 shadow-[0_0_10px_rgba(56,189,248,0.8)]" />
+            <span>
+              On your side emotionally — listening without judgment when you&apos;re scared,
+              confused, or just tired of dealing with it.
+            </span>
+          </li>
+          <li className="flex gap-2">
+            <span className="mt-1 h-1.5 w-1.5 rounded-full bg-cyan-300 shadow-[0_0_10px_rgba(34,211,238,0.8)]" />
+            <span>
+              On your side practically — turning scattered symptoms, paperwork, and “I&apos;ll do it
+              later” tasks into a clear, doable plan.
+            </span>
+          </li>
+          <li className="flex gap-2">
+            <span className="mt-1 h-1.5 w-1.5 rounded-full bg-emerald-300 shadow-[0_0_10px_rgba(52,211,153,0.8)]" />
+            <span>
+              On your side financially — helping you avoid unnecessary visits and surprise bills by
+              making costs and trade-offs visible up front.
+            </span>
+          </li>
+          <li className="flex gap-2">
+            <span className="mt-1 h-1.5 w-1.5 rounded-full bg-sky-200 shadow-[0_0_10px_rgba(191,219,254,0.9)]" />
+            <span>
+              On your side over time — keeping track of what you&apos;ve tried, what worked, and
+              what&apos;s next, so you don&apos;t have to hold it all in your head.
+            </span>
+          </li>
+        </ul>
 
-<p className="mt-3 text-xs text-slate-400">
-  Stella doesn’t replace doctors or emergency care. She makes it easier to reach them when you need to — and easier to
-  take care of yourself, your time, and your money every step in between.
-</p>
-
+        <p className="mt-3 text-xs text-slate-400">
+          Stella doesn&apos;t replace doctors or emergency care. She makes it easier to reach them
+          when you need to — and easier to take care of yourself, your time, and your money every
+          step in between.
+        </p>
 
         <ul className="mt-3 space-y-2 text-sm text-slate-300/95">
           <li className="flex gap-2">
@@ -478,7 +549,9 @@ function WhyDifferentSection() {
 
       <div className="grid gap-4 lg:grid-cols-3">
         <div className="rounded-3xl border border-slate-800/85 bg-slate-950/95 p-4 text-sm text-slate-300 shadow-[0_0_20px_rgba(15,23,42,0.9)]">
-          <h3 className="text-sm font-semibold text-slate-50">Medical-first, not ad-driven.</h3>
+          <h3 className="text-sm font-semibold text-slate-50">
+            Medical-first, not ad-driven.
+          </h3>
           <p className="mt-2 text-xs text-slate-300/90">
             No Trek doesn&apos;t sell your attention to clinics or pharma. Recommendations are
             grounded in cited sources and your context, not whoever bids the most.
@@ -490,7 +563,9 @@ function WhyDifferentSection() {
         </div>
 
         <div className="rounded-3xl border border-slate-800/85 bg-slate-950/95 p-4 text-sm text-slate-300 shadow-[0_0_20px_rgba(15,23,42,0.9)]">
-          <h3 className="text-sm font-semibold text-slate-50">Designed around real life.</h3>
+          <h3 className="text-sm font-semibold text-slate-50">
+            Designed around real life.
+          </h3>
           <p className="mt-2 text-xs text-slate-300/90">
             Work, kids, pain, money, fear—healthcare happens in the middle of everything else.
             Stella is built to be realistic about that instead of pretending you&apos;re a full-time
@@ -503,7 +578,9 @@ function WhyDifferentSection() {
         </div>
 
         <div className="rounded-3xl border border-slate-800/85 bg-slate-950/95 p-4 text-sm text-slate-300 shadow-[0_0_20px_rgba(15,23,42,0.9)]">
-          <h3 className="text-sm font-semibold text-slate-50">Privacy as a feature, not a footer.</h3>
+          <h3 className="text-sm font-semibold text-slate-50">
+            Privacy as a feature, not a footer.
+          </h3>
           <p className="mt-2 text-xs text-slate-300/90">
             We treat your health story like something you own, not something to mine. You see what
             Stella remembers, and you decide what stays.
@@ -567,8 +644,7 @@ function FooterDisclaimer() {
 
 /* ============================== Splash & Background ============================== */
 
-/* ============================== Splash ============================== */
-// Match landing-page splash, but wordmark = "INTAKE"
+// Match landing-page splash, but wordmark = "NO TREK"
 function SplashIntro({ onDone }: { onDone: () => void }) {
   const [fade, setFade] = useState(false)
 
@@ -588,15 +664,15 @@ function SplashIntro({ onDone }: { onDone: () => void }) {
     <div
       aria-hidden
       className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950 transition-opacity duration-700 ${
-        fade ? 'opacity-0 pointer-events-none' : 'opacity-100'
+        fade ? 'pointer-events-none opacity-0' : 'opacity-100'
       }`}
     >
       {/* animated orb backdrop */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute -top-40 -right-32 h-80 w-80 rounded-full bg-[#0E5BD8]/40 blur-3xl animate-[pulse_10s_ease-in-out_infinite]" />
-        <div className="absolute top-1/3 -left-40 h-96 w-96 rotate-12 bg-gradient-to-tr from-[#0E5BD8]/25 via-sky-500/20 to-transparent blur-3xl animate-[spin_40s_linear_infinite]" />
+        <div className="absolute -top-40 -right-32 h-80 w-80 animate-[pulse_10s_ease-in-out_infinite] rounded-full bg-[#0E5BD8]/40 blur-3xl" />
+        <div className="absolute top-1/3 -left-40 h-96 w-96 rotate-12 animate-[spin_40s_linear_infinite] bg-gradient-to-tr from-[#0E5BD8]/25 via-sky-500/20 to-transparent blur-3xl" />
       </div>
-      <div className="relative select-none text-5xl sm:text-7xl md:text-8xl font-extrabold tracking-tight italic text-white drop-shadow-[0_0_40px_rgba(37,99,235,0.75)]">
+      <div className="relative select-none text-5xl font-extrabold italic tracking-tight text-white drop-shadow-[0_0_40px_rgba(37,99,235,0.75)] sm:text-7xl md:text-8xl">
         NO TREK
       </div>
     </div>
@@ -647,7 +723,7 @@ function LogoNT() {
 
 function HeroChip({ label }: { label: string }) {
   return (
-    <span className="rounded-full border border-sky-400/50 bg-slate-900/70 px-3 py-1 shadow-[0_0_24px_rgba(56,189,248,0.45)] motion-safe:hover:shadow-[0_0_32px_rgba(56,189,248,0.7)]">
+    <span className="rounded-full border border-sky-400/50 bg-slate-900/70 px-3 py-1 text-[10px] font-semibold shadow-[0_0_24px_rgba(56,189,248,0.45)]">
       {label}
     </span>
   )
@@ -671,11 +747,11 @@ function ChatBubble({
   const isUser = role === 'user'
   return (
     <div
-      className={`max-w-full rounded-2xl border px-3 py-2 ${
+      className={`max-w-full rounded-2xl border px-3 py-2 text-[11px] ${
         isUser
           ? 'ml-auto border-sky-500/60 bg-sky-500/10 text-sky-100'
           : 'mr-auto border-slate-700/80 bg-slate-900/80 text-slate-100'
-      } text-[11px]`}
+      }`}
     >
       {children}
     </div>
