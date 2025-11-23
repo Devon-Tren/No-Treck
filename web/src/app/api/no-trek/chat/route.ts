@@ -6,16 +6,32 @@ export const dynamic = 'force-dynamic'
 export const revalidate = 0
 
 /* ============================== Config ============================== */
+
 const OPENAI_API_KEY =
   process.env.OPENAI_API_KEY || process.env.OPENAI_API_KEY_1
-const OPENAI_MODEL = 'gpt-4.1-mini'
+const OPENAI_MODEL = 'gpt-4.1-mini' as const
 
+if (!OPENAI_API_KEY) {
+  console.warn(
+    '[no-trek/chat] OPENAI_API_KEY is missing. Set it in .env.local or your deployment env.',
+  )
+}
+
+const openai = OPENAI_API_KEY
+  ? new OpenAI({ apiKey: OPENAI_API_KEY })
+  : null
+
+  console.log(
+    '[no-trek/chat] OPENAI key prefix:',
+    OPENAI_API_KEY?.slice(0, 6) || 'MISSING',
+  );
+  
 /* ============================== Types ============================== */
+
 type Risk = 'low' | 'moderate' | 'severe'
 type Citation = { title: string; url: string; source?: string }
 type InsightCard = { id: string; title: string; body: string; citations?: Citation[] }
 
-// NOTE: include reviewCite so REVIEW_GATE can pass on the client
 type PlaceReview = {
   url: string
   source?: string
@@ -50,7 +66,8 @@ type ChatResponse = {
   places?: Place[]
 }
 
-/* ============================== Guardrails ============================== */
+/* ============================== Guardrails / System Prompt ============================== */
+
 const ALLOWED_CITATION_DOMAINS = [
   'nih.gov',
   'medlineplus.gov',
@@ -62,20 +79,42 @@ const ALLOWED_CITATION_DOMAINS = [
 ]
 
 const SYS = [
-  'You are Stella, No Trek’s medical triage and care-navigation assistant. Be concise, warm, and safety-first.',
-  'Always reply as a single JSON object with keys: text, risk, insights. risk ∈ {"low","moderate","severe"}. insights = [{id,title,body,citations?}]. No markdown, no extra keys.',
-  `Citations in insights MUST come only from: ${ALLOWED_CITATION_DOMAINS.join(', ')}.`,
-  'Primary job: understand symptoms, assess risk, and suggest safe next steps. Ask brief clarifying questions before strong recommendations.',
-  'When the user either mentions calling/scheduling OR seems ready for concrete next steps, offer: you can draft a call script and help place a call to a nearby clinic.',
-  'If they agree to create a call script, FIRST ask which clinic/office to call (name, location/city, and phone number if they have it) before asking other details.',
-  'Ask a short series (≤6) of focused questions to draft the script: who you are calling, location/distance, insurance, timing/availability, callback number, and what they want from the visit.',
-  'Then include a clear call script in text, prefaced with "CALL SCRIPT DRAFT:". Write it as if the patient or their delegate is speaking to clinic staff.',
-  'After the script, explicitly ask if it’s okay or what they’d like changed. If they request changes, ask what to adjust and revise the script; repeat until they say it looks good.',
-  'Once they approve, explicitly ask for consent to place a call on their behalf and to share the script information with a clinic. If they consent, end text with the exact line: "CALL_SCRIPT_APPROVED_AND_CONSENTED". If they do not consent, respect that and focus on other next steps.',
-  'If location is needed to suggest venues, ask for a US ZIP code and explain why.',
+  'You are Stella, No Trek’s medical-first AI concierge.',
+  'You help people reason about symptoms, risk, and next steps, and you speak like a calm, thoughtful clinician-concierge — never like a survey or a chatbot.',
+  'You must be concise, warm, and safety-first.',
+  'You DO NOT give formal diagnoses or prescriptions. Everything is educational, not a substitute for in-person care.',
+  '',
+  'You MUST return a single JSON object with keys exactly:',
+  'text, risk, insights.',
+  '',
+  '• text: string — your reply in plain text (no markdown).',
+  '• risk: one of "low", "moderate", "severe".',
+  '• insights: array of {id, title, body, citations?}.',
+  '  - citations (if present) MUST be from approved medical domains only.',
+  '',
+  `Approved citation domains: ${ALLOWED_CITATION_DOMAINS.join(', ')}.`,
+  '',
+  'STYLE RULES:',
+  '- First line: 1–2 short sentences that acknowledge how they sound and what they’re trying to figure out.',
+  '- Then 2–4 short sections separated by line breaks, with clear, natural prose (no bullet characters).',
+  '- Ask at most 1–2 targeted follow-up questions at a time, woven into the text, not in a long checklist.',
+  '- If there is any chance of an emergency (e.g., severe chest pain, trouble breathing, stroke signs, major trauma, can’t stay conscious), clearly advise emergency services and label risk as "severe".',
+  '- Do NOT sound like you are filling out a form. No “Question 1 / Question 2” style.',
+  '',
+  'INSIGHTS:',
+  '- Each insight should feel like a mini-clinician note or summary track.',
+  '- id: short stable string identifier.',
+  '- title: brief, human-readable label.',
+  '- body: 2–6 sentences explaining what you’re thinking about / watching for, in plain language.',
+  '- citations: optional; if present, each is {title,url,source?} and url must be from an approved domain.',
+  '',
+  'If you are not sure what to say, be honest about uncertainty, keep risk conservative, and give 1–3 practical next steps and red flags to watch for.',
+  '',
+  'NO MARKDOWN. NO EXTRA KEYS. Return ONLY valid JSON.',
 ].join(' ')
 
 /* ============================== Helpers ============================== */
+
 const uid = (p = 'id') => `${p}_${Math.random().toString(36).slice(2, 9)}`
 const errStr = (e: unknown) =>
   e instanceof Error ? e.message : typeof e === 'string' ? e : JSON.stringify(e)
@@ -90,7 +129,7 @@ function normRisk(x: any): Risk {
 function domainAllowed(u: string) {
   try {
     const h = new URL(u).hostname.replace(/^www\./, '')
-    return ALLOWED_CITATION_DOMAINS.some((d) => h.endsWith(d))
+    return ALLOWED_CITATION_DOMAINS.some(d => h.endsWith(d))
   } catch {
     return false
   }
@@ -110,17 +149,16 @@ function sanitizeInsights(arr: any[]): InsightCard[] {
 
 function extractZip(messages: { role: string; content: string }[], bodyZip?: string) {
   if (bodyZip && /^\d{5}(-\d{4})?$/.test(bodyZip)) return bodyZip.slice(0, 5)
-  const joined = messages.map((m) => m.content || '').join(' ')
+  const joined = messages.map(m => m.content || '').join(' ')
   const m =
     joined.match(/\bZIP:\s*([0-9]{5})(?:-[0-9]{4})?/i) ||
     joined.match(/\b([0-9]{5})(?:-[0-9]{4})?\b/)
   return m ? m[1] : null
 }
 
-function haversineKm(
-  a: { lat: number; lon: number },
-  b: { lat: number; lon: number },
-) {
+/* ------- Simple geo / hospital helpers ------- */
+
+function haversineKm(a: { lat: number; lon: number }, b: { lat: number; lon: number }) {
   const R = 6371
   const dLat = ((b.lat - a.lat) * Math.PI) / 180
   const dLon = ((b.lon - a.lon) * Math.PI) / 180
@@ -137,7 +175,10 @@ async function zipToLatLng(zip: string) {
     `https://nominatim.openstreetmap.org/search?format=jsonv2&q=${encodeURIComponent(
       zip,
     )}&countrycodes=us&limit=1`,
-    { headers: { 'User-Agent': 'no-trek/1.0 (care triage)' }, cache: 'no-store' },
+    {
+      headers: { 'User-Agent': 'no-trek/1.0 (care triage)' },
+      cache: 'no-store',
+    },
   )
   if (!r.ok) return null
   const arr = await r.json()
@@ -153,7 +194,6 @@ function toGoogleReviewSearch(name: string, zip?: string) {
 }
 
 async function overpassHospitals(lat: number, lon: number, radiusKm = 25) {
-  // hospitals + ER-capable points
   const q = `
     [out:json][timeout:25];
     (
@@ -178,7 +218,7 @@ async function overpassHospitals(lat: number, lon: number, radiusKm = 25) {
   const j = await res.json().catch(() => ({ elements: [] as any[] }))
   const elements: any[] = Array.isArray(j?.elements) ? j.elements : []
   return elements
-    .map((e) => {
+    .map(e => {
       const c = e.center || e
       const tags = e.tags || {}
       const lat2 = typeof c?.lat === 'number' ? c.lat : undefined
@@ -197,14 +237,21 @@ async function overpassHospitals(lat: number, lon: number, radiusKm = 25) {
         website: tags.website || undefined,
       }
     })
-    .filter(Boolean) as Array<{ id: string; name: string; lat: number; lon: number; address?: string; website?: string }>
+    .filter(Boolean) as Array<{
+    id: string
+    name: string
+    lat: number
+    lon: number
+    address?: string
+    website?: string
+  }>
 }
 
 async function resolvePlacesFromZip(zip: string): Promise<Place[]> {
   const geo = await zipToLatLng(zip)
   if (!geo) return []
   const raw = await overpassHospitals(geo.lat, geo.lon)
-  const places: Place[] = raw.map((p) => {
+  const places: Place[] = raw.map(p => {
     const distance_km = haversineKm(geo, { lat: p.lat, lon: p.lon })
     const reviewUrl = toGoogleReviewSearch(p.name, zip)
     return {
@@ -216,7 +263,7 @@ async function resolvePlacesFromZip(zip: string): Promise<Place[]> {
       distance_km,
       price: '$$$',
       reason: 'Emergency-capable facility near you',
-      reviewCite: { url: reviewUrl, source: 'google.com' }, // ✅ passes REVIEW_GATE
+      reviewCite: { url: reviewUrl, source: 'google.com' }, // passes REVIEW_GATE on the client
     }
   })
   return places.sort((a, b) => (a.distance_km ?? 999) - (b.distance_km ?? 999))
@@ -239,10 +286,15 @@ function demoFallback(zip: string): Place[] {
 }
 
 /* ============================== Route ============================== */
+
 export async function POST(req: NextRequest) {
-  if (!OPENAI_API_KEY) {
+  if (!openai) {
     return NextResponse.json(
-      { error: 'Missing OpenAI key', reason: 'NO_ENV', details: { hasKey: false } },
+      {
+        error: 'Missing OpenAI key',
+        reason: 'NO_ENV',
+        details: { hasKey: false },
+      },
       { status: 500 },
     )
   }
@@ -260,12 +312,16 @@ export async function POST(req: NextRequest) {
   }
 
   const msgs = Array.isArray(body.messages) ? body.messages : []
-  const lastUserText = msgs.filter((m) => m.role === 'user').slice(-1)[0]?.content || ''
+  const lastUserText =
+    msgs.filter(m => m.role === 'user').slice(-1)[0]?.content || ''
 
   try {
-    /* --------- OpenAI --------- */
-    const client = new OpenAI({ apiKey: OPENAI_API_KEY })
-    const chat: any[] = [{ role: 'system', content: SYS }, ...msgs.map((m) => ({ role: m.role, content: m.content }))]
+    /* --------- OpenAI call --------- */
+
+    const chat: any[] = [
+      { role: 'system', content: SYS },
+      ...msgs.map(m => ({ role: m.role, content: m.content })),
+    ]
 
     if (body.imageBase64) {
       chat.push({
@@ -277,7 +333,32 @@ export async function POST(req: NextRequest) {
       })
     }
 
-    const completion = await client.chat.completions.create({
+    if (!openai) {
+        console.error("[no-trek/chat] OpenAI client not initialized");
+        return new Response(
+          JSON.stringify({ text: "Stella is offline (no API key configured)." }),
+          { status: 500, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      
+      // quick connectivity test
+      try {
+        const pingRes = await fetch("https://api.openai.com/v1/models", {
+          headers: {
+            Authorization: `Bearer ${OPENAI_API_KEY}`,
+          },
+        });
+      
+        console.log(
+          "[no-trek/chat] ping status to /v1/models:",
+          pingRes.status,
+        );
+      } catch (e) {
+        console.error("[no-trek/chat] basic fetch to OpenAI FAILED:", e);
+      }
+      
+
+    const completion = await openai.chat.completions.create({
       model: OPENAI_MODEL,
       temperature: 0.2,
       response_format: { type: 'json_object' },
@@ -291,22 +372,28 @@ export async function POST(req: NextRequest) {
     const risk: Risk = normRisk(parsed?.risk || parsed?.planDelta?.risk)
     const insights = sanitizeInsights(parsed?.insights)
 
-    /* --------- Places synthesis (always provide when needed) --------- */
+    /* --------- Places synthesis (for nearby care) --------- */
+
     let places: Place[] = []
-    const wantsNearby = /near\s*me|nearby|closest|hospital|urgent|er|clinic/i.test(lastUserText)
+    const wantsNearby = /near\s*me|nearby|closest|hospital|urgent|er|clinic/i.test(
+      lastUserText,
+    )
     const zip = extractZip(msgs, body.zip || undefined)
 
     if (zip && (wantsNearby || risk !== 'low')) {
       try {
         places = await resolvePlacesFromZip(zip)
-        if (!places.length) places = demoFallback(zip) // never stall the UI
-      } catch {
+        if (!places.length) places = demoFallback(zip)
+      } catch (err) {
+        console.error('[no-trek/chat] place lookup failed, using fallback:', err)
         places = demoFallback(zip)
       }
     }
 
-    return NextResponse.json<ChatResponse>({ text, risk, insights, places })
+    const payload: ChatResponse = { text, risk, insights, places }
+    return NextResponse.json(payload)
   } catch (e) {
+    console.error('[no-trek/chat] OpenAI or routing error:', e)
     return NextResponse.json(
       { error: 'OpenAI request failed', details: errStr(e) },
       { status: 502 },
