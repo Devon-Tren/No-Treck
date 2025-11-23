@@ -99,6 +99,10 @@ type Task = {
 // Match brand blue
 const BRAND_BLUE = '#0E5BD8'
 
+// Stella’s default greeting (used for first message + reset)
+const STELLA_GREETING =
+  'Hi — I’m Stella, the guide that lives inside No Trek. Start wherever your brain is actually stuck: a weird symptom, a bill you don’t understand, or something for a family member. Tell me what’s going on in your words, and I’ll help you turn it into a plan.'
+
 const ALLOWED_DOMAINS = [
   'nih.gov',
   'medlineplus.gov',
@@ -179,6 +183,13 @@ High-level personality
 - You sound like a human clinician texting: conversational, specific, never scripted.
 - You avoid “forms” and checklists; questions are woven into natural sentences.
 - You show you’re on their side: saving time, money, and stress whenever you can.
+
+Length of reply:
+- Do not reply in paragraphs reply in texts and if needed expand more but do not ramble on.
+- Do not go over 2-3 sentences per reply unless abosulutely neccessary, aim for 2 sentences.
+- Ask a question at the end if needed to give further clarity.
+- Be intuitive and look for user engagement.
+
 
 1. Core mission & boundaries
 Mission
@@ -635,8 +646,7 @@ export default function IntakePage() {
     {
       id: uid(),
       role: 'assistant',
-      text:
-        'Hi — I’m Stella, No Trek’s medical AI concierge. Start wherever you are — a new symptom, a long-term worry, or “is this worth a visit?”. I’ll listen first, then bring in medical detail, citations, and nearby options.',
+      text: STELLA_GREETING,
     },
   ])
   const [draft, setDraft] = useState('')
@@ -1334,8 +1344,7 @@ export default function IntakePage() {
       {
         id: uid(),
         role: 'assistant',
-        text:
-          'Hi — I’m Stella, No Trek’s medical AI concierge. Start wherever you are — a new symptom, a long-term worry, or “is this worth a visit?”. I’ll listen first, then bring in medical detail, citations, and nearby options.',
+        text: STELLA_GREETING,
       },
     ])
     setRisk('low')
@@ -1362,7 +1371,7 @@ export default function IntakePage() {
     insights.length > 0 ||
     places.length > 0
   const readyInsightCount = (evidenceLock ? insights.filter(i => (i.citations || []).length > 0) : insights).length
-  const showRightRail = engaged
+  const showRightRail = true // always show Stella’s plan space on the right
   const cardsActive = readyInsightCount > 0 || rankedPlaces.length > 0
 
   const openTasks = tasks.filter(t => !t.done).length
@@ -1393,6 +1402,38 @@ export default function IntakePage() {
     })
   }, [engaged, readyInsightCount, rankedPlaces.length, tasks])
 
+  // Starter chips: fill the input instead of sending
+  const starterChips = [
+    {
+      label: 'New or ongoing symptom',
+      text:
+        "I’m worried about a symptom and not sure how urgent it is or where I should go.",
+    },
+    {
+      label: 'Bills & money stress',
+      text:
+        "I’m overwhelmed by a medical bill and not sure what’s correct or what my options are.",
+    },
+    {
+      label: 'Forms, portals, or paperwork',
+      text:
+        "I’m stuck on healthcare forms or portals and need help understanding and organizing what to do.",
+    },
+    {
+      label: 'For a family member',
+      text:
+        "I’m trying to help a family member with their health and feel lost about where to start.",
+    },
+  ]
+
+  const handleChipClick = (text: string) => {
+    setDraft(text)
+    // small delay so the textarea exists before focusing
+    setTimeout(() => {
+      textRef.current?.focus()
+    }, 0)
+  }
+
   return (
     <main
       className="relative min-h-dvh overflow-hidden bg-slate-950 text-slate-50"
@@ -1413,29 +1454,22 @@ export default function IntakePage() {
         <EmergencyBanner />
 
         <div className="mx-auto max-w-7xl px-4 pb-10 pt-8 sm:px-6 lg:px-8">
-          {/* Top bar */}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center gap-3">
-              <div className="grid h-9 w-9 place-items-center rounded-full bg-white shadow-sm">
-                <span className="text-xs font-extrabold tracking-tight text-[#0E5BD8]">
-                  NT
-                </span>
-              </div>
-              <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-200/80">
-                  No Trek
-                </p>
-                <h1 className="text-xl font-semibold tracking-tight text-slate-50 sm:text-2xl">
-                  Intake with Stella
-                </h1>
-                <p className="text-xs text-slate-200/80 sm:text-[13px]">
-                  Talk to Stella like you&apos;re texting a nurse friend with a supercomputer
-                  behind her. No forms or prerequisites — we listen first, then bring in
-                  medical detail, risk, and nearby options.
-                </p>
-              </div>
+          {/* Stella hero row */}
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div className="max-w-xl">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-sky-300/80">
+                Start with Stella
+              </p>
+              <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-50 sm:text-3xl">
+                Tell Stella what’s actually on your mind.
+              </h1>
+              <p className="mt-2 text-sm text-slate-200/85">
+                Bring anything: new symptoms, long-term worries, confusing bills, forms and
+                portals, or something for a family member. Stella listens first, then turns
+                it into a simple plan with you.
+              </p>
             </div>
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-col items-start gap-2 sm:items-end">
               <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-500/60 bg-slate-900/80 px-3 py-1 text-xs text-slate-100 backdrop-blur">
                 <span
                   className={cx(
@@ -1449,113 +1483,30 @@ export default function IntakePage() {
                 />
                 <span>
                   {connected === null
-                    ? 'Checking'
+                    ? 'Checking Stella'
                     : connected
-                    ? 'Connected to Stella'
-                    : 'Base engine'}
+                    ? 'Stella is online'
+                    : 'Using backup engine'}
                 </span>
               </div>
-              {debug && (
-                <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-500/60 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-100">
-                  debug: places {places.length} → reviewed {reviewedPlaces.length} → ranked{' '}
-                  {rankedPlaces.length}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Controls row */}
-          <div className="mt-5 flex flex-wrap items-center gap-3">
-            <div className="pill inline-flex flex-wrap items-center gap-2 rounded-full border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 backdrop-blur">
-              <label className="inline-flex items-center gap-2">
+              <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 backdrop-blur">
+                <span className="hidden sm:inline">Optional: your ZIP for nearby options</span>
+                <span className="inline sm:hidden">ZIP for nearby options</span>
                 <input
-                  type="checkbox"
-                  checked={evidenceLock}
-                  onChange={e => setEvidenceLock(e.target.checked)}
-                  className="h-3.5 w-3.5 bg-transparent"
+                  value={zip}
+                  onChange={e => setZip(e.target.value.replace(/[^\d-]/g, '').slice(0, 10))}
+                  placeholder="e.g., 10001"
+                  className="w-24 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-400"
+                  inputMode="numeric"
+                  aria-label="ZIP code for nearby results"
                 />
-                Evidence lock
-              </label>
-              <label className="inline-flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  checked={hardEvidence}
-                  onChange={e => setHardEvidence(e.target.checked)}
-                  className="h-3.5 w-3.5 bg-transparent"
-                />
-                Prefer citations (warn if missing)
-              </label>
-              <label
-                className="inline-flex items-center gap-2"
-                title="Show places even if reviews are missing"
-              >
-                <input
-                  type="checkbox"
-                  checked={showUnverified}
-                  onChange={e => setShowUnverified(e.target.checked)}
-                  className="h-3.5 w-3.5 bg-transparent"
-                />
-                Show unverified options
-              </label>
-              <button
-                onClick={() => setShowSources(true)}
-                className="rounded-full px-3 py-1 hover:bg-slate-800/80"
-              >
-                Sources ({sessionSources.length})
-              </button>
-              <button
-                onClick={exportTxt}
-                className="rounded-full px-3 py-1 hover:bg-slate-800/80"
-              >
-                Export .txt
-              </button>
-              <button
-                onClick={exportForTasks}
-                disabled={tasks.length === 0}
-                className="rounded-full px-3 py-1 font-semibold disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-800/80"
-              >
-                Send to Tasks
-              </button>
-              <button
-                onClick={() => setShowTasks(true)}
-                className="rounded-full px-3 py-1 font-semibold hover:bg-slate-800/80"
-              >
-                Follow-ups ({openTasks})
-              </button>
-              <button
-                onClick={resetSession}
-                className="rounded-full px-3 py-1 font-semibold hover:bg-slate-800/80"
-              >
-                Reset
-              </button>
-              <button
-                onClick={deleteData}
-                className="rounded-full px-3 py-1 font-semibold hover:bg-slate-800/80"
-                title="Delete local session data & images"
-              >
-                Delete my data
-              </button>
-            </div>
-          </div>
-
-          {/* ZIP chip */}
-          <div className="mt-4">
-            <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 backdrop-blur">
-              <span>ZIP (for nearby results):</span>
-              <input
-                value={zip}
-                onChange={e => setZip(e.target.value.replace(/[^\d-]/g, '').slice(0, 10))}
-                placeholder="e.g., 10001"
-                className="w-24 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-400"
-                inputMode="numeric"
-                aria-label="ZIP code for nearby results"
-              />
+              </div>
             </div>
           </div>
 
           {/* Layout */}
           <div
-            className={cx('mt-6 grid gap-6', showRightRail ? '' : 'flex justify-center')}
+            className={cx('mt-6 grid gap-6')}
             style={
               showRightRail
                 ? ({ gridTemplateColumns: 'minmax(760px,1.45fr) 400px' } as CSSProperties)
@@ -1566,15 +1517,32 @@ export default function IntakePage() {
             <section
               className={cx(
                 'relative w-full overflow-hidden rounded-[22px] border-[2px] border-slate-700/70 bg-slate-900/80 p-4 shadow-[0_0_26px_rgba(15,23,42,0.9)] backdrop-blur',
-                showRightRail ? '' : 'max-w-5xl',
               )}
               aria-label="No Trek chat"
             >
-              <div className="flex items-center justify-between px-1">
-                {engaged && <RiskBadge risk={risk} />}
-                <span className="text-[11px] text-slate-300/90">
-                  Educational support — not a diagnosis
-                </span>
+              {/* Stella persona header */}
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="grid h-9 w-9 place-items-center rounded-full bg-gradient-to-br from-sky-500 via-emerald-400 to-sky-600 text-[11px] font-black tracking-tight text-slate-950 shadow-[0_0_24px_rgba(56,189,248,0.85)]">
+                    ST
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-200/80">
+                      Stella · No Trek guide
+                    </p>
+                    <p className="mt-1 text-sm text-slate-100">
+                      I live here inside No Trek. Start wherever your brain is actually stuck —
+                      symptoms, bills, forms, or caring for someone else — and we’ll turn it into
+                      a plan together.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-col items-end gap-1">
+                  {engaged && <RiskBadge risk={risk} />}
+                  <span className="text-[11px] text-slate-300/90">
+                    Educational support — not a diagnosis
+                  </span>
+                </div>
               </div>
 
               {/* Living Care Map */}
@@ -1593,7 +1561,7 @@ export default function IntakePage() {
 
               {risk === 'severe' && (
                 <div className="mt-3 rounded-xl border-[2px] border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-                  Severe symptoms may require urgent evaluation. If you have life-threatening
+                  Some symptoms may be in an emergency range. If you have life-threatening
                   symptoms, call your local emergency number now.
                 </div>
               )}
@@ -1682,7 +1650,7 @@ export default function IntakePage() {
                       ref={textRef}
                       value={draft}
                       onChange={e => setDraft(e.target.value)}
-                      placeholder="Tell Stella what you’re worried about, in your own words… or just ask “is this worth a visit?”"
+                      placeholder="You can tell me about symptoms, bills, forms, or someone you’re helping…"
                       rows={1}
                       onKeyDown={e => {
                         if (e.key === 'Enter' && !e.shiftKey) {
@@ -1692,7 +1660,7 @@ export default function IntakePage() {
                       }}
                       className="h-12 min-h-[46px] w-full resize-none rounded-3xl border border-slate-600/80 bg-slate-900/80 px-4 py-3 pr-16 text-[15px] leading-6 text-slate-50 placeholder:text-slate-400 outline-none focus:border-slate-300"
                     />
-                    {/* Vertically-centered send button, no font download needed */}
+                    {/* Vertically-centered send button */}
                     <button
                       type="submit"
                       aria-label="Send message"
@@ -1725,24 +1693,95 @@ export default function IntakePage() {
                   </label>
                 )}
 
-                {/* Guided quick prompts — optional, not prerequisites */}
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-200/90">
-                  <span>If it&apos;s easier, tap one:</span>
-                  {[
-                    'Help me figure out how urgent this might be.',
-                    'I’m not sure if this is home-care or clinic-level.',
-                    'I care about cost and wait time as much as safety.',
-                    'I’ve been dealing with this for a while — is that a problem?',
-                  ].map(label => (
+                {/* Guided starter chips — expand scope without overwhelming */}
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-200/90">
+                  <span>If it’s easier, tap one to start:</span>
+                  {starterChips.map(chip => (
                     <button
-                      key={label}
+                      key={chip.label}
                       type="button"
-                      onClick={() => handleSend(label)}
+                      onClick={() => handleChipClick(chip.text)}
                       className="rounded-full border border-slate-600/80 bg-slate-900/80 px-2.5 py-1 text-xs font-semibold text-slate-100 hover:bg-slate-800/90"
                     >
-                      {label}
+                      {chip.label}
                     </button>
                   ))}
+                </div>
+
+                {/* Light session tools tucked away at bottom-right */}
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-300/90">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="inline-flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={evidenceLock}
+                        onChange={e => setEvidenceLock(e.target.checked)}
+                        className="h-3.5 w-3.5 bg-transparent"
+                      />
+                      Evidence lock
+                    </label>
+                    <label className="inline-flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={hardEvidence}
+                        onChange={e => setHardEvidence(e.target.checked)}
+                        className="h-3.5 w-3.5 bg-transparent"
+                      />
+                      Warn if citations missing
+                    </label>
+                    <label
+                      className="inline-flex items-center gap-1.5"
+                      title="Show places even if reviews are missing"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={showUnverified}
+                        onChange={e => setShowUnverified(e.target.checked)}
+                        className="h-3.5 w-3.5 bg-transparent"
+                      />
+                      Show unverified options
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => setShowSources(true)}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-100 hover:bg-slate-800/90"
+                    >
+                      Sources ({sessionSources.length})
+                    </button>
+                    <button
+                      onClick={exportTxt}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-100 hover:bg-slate-800/90"
+                    >
+                      Export .txt
+                    </button>
+                    <button
+                      onClick={exportForTasks}
+                      disabled={tasks.length === 0}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] font-semibold text-slate-100 disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-800/90"
+                    >
+                      Send to Tasks
+                    </button>
+                    <button
+                      onClick={() => setShowTasks(true)}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
+                    >
+                      Follow-ups ({openTasks})
+                    </button>
+                    <button
+                      onClick={resetSession}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
+                    >
+                      Reset
+                    </button>
+                    <button
+                      onClick={deleteData}
+                      className="rounded-full border border-slate-700/80 bg-slate-950/80 px-3 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-900/90"
+                      title="Delete local session data & images"
+                    >
+                      Delete my data
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -1767,14 +1806,17 @@ export default function IntakePage() {
             {/* Right rail */}
             {showRightRail && (
               <aside className="self-start space-y-4 lg:sticky lg:top-8">
-                {cardsActive ? (
+                {/* Stella’s plan space — always visible */}
+                <PlanPanel risk={risk} insights={insights} tasks={tasks} />
+
+                {cardsActive && (
                   <>
-                    {/* Clinics / care sites up top */}
+                    {/* Clinics / care sites */}
                     {top3.length > 0 && (
                       <div
                         className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-950/95 p-5 backdrop-blur"
                         style={{
-                          animation: `floatInRight ${CARD_DURATION_MS}ms ease-out both`,
+                          animation: `floatInRight ${CARD_DURATION_MS}msease-out both`,
                           animationDelay: `0ms`,
                         }}
                       >
@@ -1861,23 +1903,25 @@ export default function IntakePage() {
                           No reviewed options yet
                         </h3>
                         <p className="mt-1 text-sm text-slate-200/90">
-                          We hide locations without verifiable ratings or public reviews. Toggle
-                          “Show unverified options” above if you’d like to see everything the
-                          model returned.
+                          We hide locations without verifiable ratings or public reviews.
+                          Toggle “Show unverified options” below if you’d like to see
+                          everything the model returned.
                         </p>
                       </div>
                     )}
                   </>
-                ) : (
-                  <RightRailPlaceholder />
                 )}
               </aside>
             )}
           </div>
 
+          {/* What Stella can / can’t do strip */}
+          <CapabilitiesStrip />
+
           <p className="mt-4 text-[11px] text-slate-400">
-            No Trek is not a medical provider. This is educational support, not a diagnosis. If
-            you have life-threatening symptoms, call your local emergency number.
+            No Trek and Stella do not provide medical care, diagnoses, or prescriptions. This
+            is educational support only. If you have life-threatening symptoms, call your
+            local emergency number.
           </p>
         </div>
       </div>
@@ -2070,8 +2114,10 @@ function BreathingBackground({ risk }: { risk: Risk }) {
 function NavBar() {
   const navLinks = [
     { href: '/', label: 'Home' },
-    { href: '/intake', label: 'Intake' },
-    { href: '/tasks', label: 'Tasks' },
+    { href: '/intake', label: 'Start with Stella' },
+    { href: '/tasks', label: 'Plan & Tasks' },
+    { href: '/explore', label: 'Explore' },
+    { href: '/info', label: 'How it works' },
     { href: '/about', label: 'About' },
     { href: '/privacy', label: 'Privacy' },
   ]
@@ -2381,6 +2427,117 @@ function StageNode({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/* ============================== Plan Panel (right rail) ============================== */
+function PlanPanel({
+  risk,
+  insights,
+  tasks,
+}: {
+  risk: Risk
+  insights: InsightCard[]
+  tasks: Task[]
+}) {
+  const latest = insights.length ? insights[insights.length - 1] : undefined
+  const understanding = latest?.why?.slice(0, 3) || []
+  const nextSteps = latest?.next?.slice(0, 3) || []
+  const openTasks = tasks.filter(t => !t.done)
+  const doneCount = tasks.length - openTasks.length
+
+  let riskLine: string
+  if (risk === 'severe') {
+    riskLine =
+      'Right now this sits in a “take seriously now” range based on what you’ve shared. If anything feels suddenly worse or unsafe, ignore this plan and seek urgent or emergency care.'
+  } else if (risk === 'moderate') {
+    riskLine =
+      'So far this sounds more in a “get checked soon” range. I’ll lean toward getting you in front of a clinician when that’s sensible for you.'
+  } else {
+    riskLine =
+      'So far this leans toward a low-to-moderate risk range based on your messages. We’ll keep watching for red flags together as you share more.'
+  }
+
+  const primaryStep =
+    nextSteps[0] ||
+    (openTasks[0]?.title
+      ? openTasks[0].title
+      : 'We’ll decide the first concrete step together once we clarify a bit more.')
+
+  const hasAnyPlan = understanding.length > 0 || nextSteps.length > 0 || tasks.length > 0
+
+  return (
+    <div className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-950/95 p-5 backdrop-blur">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h3 className="font-medium text-slate-50">Stella’s plan space</h3>
+          <p className="mt-0.5 text-[11px] text-slate-300/90">
+            As you talk, I keep a simple, private outline of where we are.
+          </p>
+        </div>
+        <span className="text-[11px] text-slate-400">
+          {tasks.length > 0 ? `${doneCount}/${tasks.length} follow-ups done` : 'No follow-ups yet'}
+        </span>
+      </div>
+
+      {!hasAnyPlan ? (
+        <div className="mt-3 space-y-2 text-sm text-slate-200/90">
+          <p>
+            Once you start talking to me, I’ll keep track of three things here:
+          </p>
+          <ul className="list-disc pl-5">
+            <li>What we’ve understood in your words</li>
+            <li>Today’s next step or two</li>
+            <li>Things to watch or prepare for</li>
+          </ul>
+          <p className="text-[11px] text-slate-400/95">
+            This is for you. You can always ignore it, change it, or clear it.
+          </p>
+        </div>
+      ) : (
+        <div className="mt-3 space-y-3 text-sm text-slate-50">
+          <section className="rounded-xl border-[2px] border-slate-700/80 bg-slate-900/90 p-3">
+            <header className="text-xs text-slate-300/90">Understanding so far</header>
+            {understanding.length > 0 ? (
+              <ul className="mt-1.5 list-disc pl-5">
+                {understanding.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1.5 text-sm text-slate-200/90">
+                We’re still in early listening mode — keep talking and I’ll summarize the
+                key pieces here.
+              </p>
+            )}
+          </section>
+
+          <section className="rounded-xl border-[2px] border-slate-700/80 bg-slate-900/90 p-3">
+            <header className="text-xs text-slate-300/90">Today’s next step</header>
+            <p className="mt-1.5 text-sm text-slate-50">{primaryStep}</p>
+            {openTasks.length > 0 && (
+              <ul className="mt-1.5 list-disc pl-5 text-xs text-slate-200/90">
+                {openTasks.slice(0, 3).map(t => (
+                  <li key={t.id}>{t.title}</li>
+                ))}
+                {openTasks.length > 3 && (
+                  <li>+ {openTasks.length - 3} more saved in follow-ups</li>
+                )}
+              </ul>
+            )}
+          </section>
+
+          <section className="rounded-xl border-[2px] border-slate-700/80 bg-slate-900/90 p-3">
+            <header className="text-xs text-slate-300/90">What we’re watching for</header>
+            <p className="mt-1.5 text-sm text-slate-50">{riskLine}</p>
+            <p className="mt-1 text-[11px] text-slate-400/95">
+              This is educational support, not a diagnosis. If your gut says “this feels
+              like an emergency,” trust that and seek urgent care.
+            </p>
+          </section>
+        </div>
+      )}
     </div>
   )
 }
@@ -2846,6 +3003,7 @@ function CardFullscreen({
   )
 }
 
+/* ============================== Right rail placeholder (unused now, kept) ============================== */
 function RightRailPlaceholder() {
   return (
     <div className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-slate-900/85 p-5 backdrop-blur">
@@ -3610,6 +3768,42 @@ function FollowUpsPanel({
             ))
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+/* ============================== Capabilities Strip ============================== */
+function CapabilitiesStrip() {
+  return (
+    <div className="mt-8 grid gap-4 md:grid-cols-2">
+      <div className="hover-card rounded-2xl border-[2px] border-slate-700/80 bg-slate-900/85 p-4 backdrop-blur">
+        <h3 className="text-sm font-semibold text-slate-50">
+          What Stella can help with
+        </h3>
+        <ul className="mt-2 space-y-1.5 text-sm text-slate-200/90">
+          <li>Understanding what’s going on in plain language.</li>
+          <li>Sorting “watch and wait” vs “get seen soon” vs “go now” — with caveats.</li>
+          <li>Turning messy problems into simple steps and follow-ups.</li>
+          <li>Preparing questions and scripts for calls or visits.</li>
+          <li>Helping with bills, coverage questions, and basic cost awareness.</li>
+        </ul>
+      </div>
+      <div className="hover-card rounded-2xl border-[2px] border-slate-700/80 bg-slate-900/85 p-4 backdrop-blur">
+        <h3 className="text-sm font-semibold text-slate-50">
+          What Stella can’t do
+        </h3>
+        <ul className="mt-2 space-y-1.5 text-sm text-slate-200/90">
+          <li>Diagnose, treat, or prescribe medications.</li>
+          <li>Replace an in-person exam or your clinicians.</li>
+          <li>Handle medical or mental health emergencies.</li>
+          <li>Guarantee outcomes, bills, or coverage decisions.</li>
+          <li>Make decisions for you — you’re always in control.</li>
+        </ul>
+        <p className="mt-2 text-[11px] text-slate-400/95">
+          Think of Stella as a calm, knowledgeable guide who walks alongside you, not a
+          doctor or emergency service.
+        </p>
       </div>
     </div>
   )
