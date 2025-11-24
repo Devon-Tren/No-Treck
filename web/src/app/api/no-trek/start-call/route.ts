@@ -3,10 +3,10 @@ import { NextResponse } from 'next/server'
 import Twilio from 'twilio'
 import { createClient } from '@supabase/supabase-js'
 
-const accountSid = process.env.TWILIO_ACCOUNT_SID!
-const authToken = process.env.TWILIO_AUTH_TOKEN!
-const callerId = process.env.TWILIO_CALLER_ID!
-const baseUrl = process.env.NEXT_PUBLIC_APP_BASE_URL!
+const accountSid = process.env.TWILIO_ACCOUNT_SID
+const authToken = process.env.TWILIO_AUTH_TOKEN
+const callerId = process.env.TWILIO_CALLER_ID
+const baseUrl = process.env.NEXT_PUBLIC_APP_BASE_URL
 
 const twilioClient = Twilio(accountSid, authToken)
 
@@ -50,12 +50,18 @@ export async function POST(req: Request) {
     }
 
     // Create Twilio call
+    if (!callerId) {
+      console.error('Missing TWILIO_CALLER_ID env var')
+      return NextResponse.json(
+        { error: 'Server misconfiguration: caller ID not set' },
+        { status: 500 }
+      )
+    }
+
     const call = await twilioClient.calls.create({
       to: data.clinic_phone,
-      from: callerId,
-      url: `${baseUrl}/api/twilio-voice?scriptId=${encodeURIComponent(
-        scriptId
-      )}`,
+      from: callerId, // now definitely string
+      url: `${baseUrl}/api/twilio-voice?scriptId=${encodeURIComponent(scriptId)}`,
     })
 
     return NextResponse.json({ callSid: call.sid })

@@ -52,9 +52,23 @@ function HeaderNT() {
 // ---- Types
 export type CallScript = {
   id: string
-  clinic_name: string
-  clinic_phone: string | null
-  script_text: string
+
+  // already existing fields...
+  scriptId?: string
+  clinicName?: string
+  clinicPhone?: string
+  scriptText?: string
+
+  // fields inferred from your errors
+  contactName?: string
+  targetPhone?: string
+  body?: string
+  reason?: string
+  language?: string
+
+  status?: 'draft' | 'approved' | 'called'
+  createdAt?: string
+  updatedAt?: string
 }
 
 export type CallLog = {
