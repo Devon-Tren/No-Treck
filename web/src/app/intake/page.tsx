@@ -340,7 +340,11 @@ Calling & scripts behavior (for AI caller + phone support)
     - name of the clinic/office,
     - location/city,
     - phone number if they have it.
-  - Ask what name you should use in the script (their name or the patient’s name) so you can say it correctly.
+  - Ask what legal name you should use for the patient in the script (the name the clinic has on file).
+  - Ask for their date of birth (DOB) as a standard identifier clinics often use.
+  - If the user says they do NOT want their DOB spoken unless staff asks:
+    - Do NOT include DOB in the first line of the script.
+    - Instead, add a private note in brackets, e.g. "(If staff asks for DOB, answer with: [DOB])." This note is for the caller only and should not be spoken in the script itself.
 - Ask a short series (no more than about 6) focused questions to draft the script, such as:
   - who they are calling for (themselves or another person),
   - preferred distance or neighborhood,
@@ -350,10 +354,10 @@ Calling & scripts behavior (for AI caller + phone support)
   - what they want from the visit (e.g., “new patient appointment”, “follow-up for X”, “same-day urgent visit”).
 - Then include a clear call script in the \`text\` field, prefaced exactly with:
   - \`CALL SCRIPT DRAFT:\`
-- The very first line of the script MUST always begin with:
-  - \`I am calling on behalf of [NAME].\`
-  where \`[NAME]\` is the name they told you to use.
-- Write the rest of the script as if the patient or their delegate is speaking to clinic staff in natural language.
+- The very first line of the script MUST always begin with a transparent introduction like:
+  - \`Hi, my name is Stella. I’m an AI assistant with No Trek, calling on behalf of [FULL NAME][, born [DOB] if they explicitly agreed to have DOB spoken].\`
+  Where \`[FULL NAME]\` is the legal name they told you to use. Only include DOB in that first line if they explicitly said they are comfortable with that; otherwise, keep DOB for when staff asks.
+- Write the rest of the script as if the patient or their delegate is speaking to clinic staff in natural language, making clear that you are assisting them as an AI assistant.
 
 Approval and improvement loop (script only)
 - After providing the script, you MUST explicitly ask for approval and feedback, for example:
@@ -365,6 +369,28 @@ Approval and improvement loop (script only)
 - Only treat the script as “final/approved” once they explicitly confirm that it looks good or that they approve it.
 
 Consent for AI caller and redirect to AI Call page
+When (and only when) ALL of the following are true:
+- The user has clearly said the call script looks good or that they approve it, or something similar.
+- The user has clearly given consent to use this script with the AI caller or a phrase implying consent is given.
+
+Treat any clear natural-language confirmation such as:
+- "Yes, you have my permission to use this script."
+- "Yes, you can call for me using that."
+- "I consent to you using this script with the AI caller."
+as explicit consent to use the script with the AI caller.
+
+…then you MUST do ALL of the following, every single time:
+
+- At the very end of your "text" string, on its own line, append exactly:
+    \'CALL_SCRIPT_APPROVED_AND_CONSENTED\', again ONLY if the user approved the script and gave consent.
+   - No quotes, no extra punctuation, no extra words.
+   - It must be uppercase, with underscores, spelled exactly as above.
+- Keep the call script itself inside "text" under the "CALL SCRIPT DRAFT:"" section as usual.
+- Include an insight object with id "call_script_metadata" whose "body" is a JSON string with at least:
+  "{ "clinicName": "<clinic name>", "clinicPhone": "<phone or null>" }".
+
+Never include "CALL_SCRIPT_APPROVED_AND_CONSENTED" unless both approval AND consent have been given.
+
 - After the user approves the script, clearly and separately ask for consent to use it with the AI caller, for example:
   - “Do I have your permission to use this approved script to help place a call through No Trek’s AI caller?”
 - If they do NOT consent:
@@ -388,7 +414,7 @@ Using the script with the AI caller
     - the clinic/office info (name, location, phone),
     - any relevant constraints (timing, insurance, preferences) you collected.
   - When you call \`no_trek.call_or_booking_webhook\` (or equivalent caller tool), include:
-    - the full approved script text (starting with “I am calling on behalf of [NAME].”),
+    - the full approved script text (starting with the AI-assistant introduction line),
     - the destination clinic/office details,
     - key structured preferences (timing window, visit type, etc.).
 - Keep all of this within the same JSON response:
@@ -512,8 +538,15 @@ Return strict JSON with:
 - places (optional, only if verified reviews available): array of place objects for care options.
 - refImages (optional): array of reference images if helpful.
 
+Critical: call-consent marker
+- If and only if the user has approved a call script AND given consent to use it with the AI caller, your "text" MUST end with a blank line followed by:
+  CALL_SCRIPT_APPROVED_AND_CONSENTED
+- This marker is how the app knows to save the script and consent. Do not forget it.
+- Never include this marker unless explicit approval + consent is clearly given.
+
 Clients may sometimes only use \`text\`, \`risk\`, and \`insights\`, but you must still follow this full schema so that intake, tasks, logistics, and the AI caller can all work correctly.
 `.trim()
+
 
 
 /* ============================== Utils ============================== */
@@ -558,7 +591,7 @@ async function saveCallScriptAndConsent(opts: {
   const { userId, clinicName, clinicPhone, scriptText, scriptJson } = opts
 
   // 1) Insert into call_scripts
-  const { data: scriptRow, error: scriptError } = await supabase
+  const { data: scriptRow, error: scriptError } = await supabase 
     .from('call_scripts')
     .insert({
       user_id: userId,
@@ -914,25 +947,32 @@ export default function IntakePage() {
   const outline = useMemo(() => outlineByRisk(risk), [risk])
   const glow = useMemo(() => glowByRisk(risk), [risk])
 
-  const maybeHandleScriptConsent = async (assistantText: string, metadata: {
-    clinicName?: string
-    clinicPhone?: string
-    scriptJson?: any
-  }) => {
+  const maybeHandleScriptConsent = async (
+    assistantText: string,
+    metadata: {
+      clinicName?: string
+      clinicPhone?: string
+      scriptJson?: any
+    },
+  ) => {
     if (!user) return // must be logged in
 
     const approved = assistantText.includes('CALL_SCRIPT_APPROVED_AND_CONSENTED')
-    const draftIdx = assistantText.indexOf('CALL SCRIPT DRAFT:')
 
-    if (!approved || draftIdx === -1) {
-      return
+    const draftLabel = 'CALL SCRIPT DRAFT:'
+    const marker = 'CALL_SCRIPT_APPROVED_AND_CONSENTED'
+
+    const draftIdx = assistantText.indexOf(draftLabel)
+    if (!approved || draftIdx === -1) return
+
+    let scriptSection = assistantText.slice(draftIdx + draftLabel.length)
+
+    const markerIdx = scriptSection.indexOf(marker)
+    if (markerIdx !== -1) {
+      scriptSection = scriptSection.slice(0, markerIdx)
     }
 
-    // Extract the script text from after the marker
-    const scriptText = assistantText
-      .slice(draftIdx + 'CALL SCRIPT DRAFT:'.length)
-      .trim()
-
+    const scriptText = scriptSection.trim()
     if (!scriptText) return
 
     try {
@@ -946,11 +986,32 @@ export default function IntakePage() {
         scriptJson: metadata.scriptJson,
       })
 
-      // Redirect to AI call page with scriptId
-      router.push(`/agent-caller?scriptId=${scriptId}`)
+      // Optional: add a little confirmation message in the chat
+      setMessages(m => [
+        ...m,
+        {
+          id: uid(),
+          role: 'assistant',
+          text:
+            'Got it — I’ve saved this call script and your consent. I’ll move you to the AI caller in a few seconds so we can place the call.',
+        },
+      ])
+
+      // 5-second delay before redirect
+      setTimeout(() => {
+        router.push(`/agent-caller?scriptId=${scriptId}`)
+      }, 5000)
     } catch (err) {
       console.error(err)
-      // optionally surface an error toast or message
+      setMessages(m => [
+        ...m,
+        {
+          id: uid(),
+          role: 'assistant',
+          text:
+            'I tried to save that call script but something went wrong on my side. You can still copy the script text for now.',
+        },
+      ])
     } finally {
       setSavingScript(false)
     }
@@ -1275,10 +1336,8 @@ export default function IntakePage() {
       attachments: imageFile
         ? [{ kind: 'image', name: imageFile.name, preview: imagePreview || undefined }]
         : undefined,
-      attachments: imageFile
-        ? [{ kind: 'image', name: imageFile.name, preview: imagePreview || undefined }]
-        : undefined,
     }
+
     setMessages(m => [...m, userMsg])
     if (textOverride === undefined) setDraft('')
     setSending(true)
@@ -1321,15 +1380,6 @@ export default function IntakePage() {
       }
 
       const data: ChatResponse = await r.json()
-
-      // 👇 NEW: check if this message contains an approved + consented call script
-      // TRIAGE_SYSTEM_PROMPT is already set up to include markers like
-      // "CALL SCRIPT DRAFT:" and "CALL_SCRIPT_APPROVED_AND_CONSENTED"
-      await maybeHandleScriptConsent(data.text || '', {
-        clinicName: 'Clinic',          // you can later swap this for a real clinic name if you track it in state
-        clinicPhone: undefined,        // same for phone
-        scriptJson: data,              // optional: store the full JSON in script_json
-      })
 
       // 👇 NEW: check if this message contains an approved + consented call script
       // TRIAGE_SYSTEM_PROMPT is already set up to include markers like

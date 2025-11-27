@@ -20,6 +20,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
+import { useSearchParams } from "next/navigation";
 
 import { cn } from "@/lib/utils";
 
@@ -141,6 +142,11 @@ function useMockTelephony() {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function uid(prefix: string) {
+  return `${prefix}-${Math.random().toString(36).slice(2, 10)}`
+}
+
 function secondsToClock(s: number) {
   const m = Math.floor(s / 60)
     .toString()
@@ -161,6 +167,16 @@ export default function AICallPage({
 }) {
   const [selectedLog, setSelectedLog] = useState<CallLog | null>(null);
   const [logs, setLogs] = useState<CallLog[]>(() => mockLogs());
+
+  
+  const searchParams = useSearchParams()
+  const scriptIdFromQuery = searchParams.get('scriptId')
+
+  const [draftInput, setDraftInput] = useState('')
+  const [draftMessages, setDraftMessages] = useState<
+    { id: string; role: 'user' | 'assistant'; text: string }[]
+  >([])
+
   const [summaries, setSummaries] = useState<SummaryCard[]>(() =>
     mockSummaries()
   );
@@ -254,36 +270,96 @@ export default function AICallPage({
     }
   }, [tel.status]);
 
+  async function sendDraftChat() {
+    const text = draftInput.trim()
+    if (!text) return
+
+    // Show user message
+    setDraftMessages(prev => [
+      ...prev,
+      { id: uid('m'), role: 'user', text },
+    ])
+    setDraftInput('')
+
+    try {
+      const res = await fetch('/api/no-trek/caller-chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text }),
+      })
+
+      if (!res.ok) {
+        console.error('caller-chat error', await res.text())
+        setDraftMessages(prev => [
+          ...prev,
+          {
+            id: uid('m'),
+            role: 'assistant',
+            text:
+              'Something went wrong reaching the call helper. Please try again in a moment.',
+          },
+        ])
+        return
+      }
+
+      const data = await res.json() as { text: string }
+
+      setDraftMessages(prev => [
+        ...prev,
+        { id: uid('m'), role: 'assistant', text: data.text },
+      ])
+    } catch (err) {
+      console.error(err)
+      setDraftMessages(prev => [
+        ...prev,
+        {
+          id: uid('m'),
+          role: 'assistant',
+          text:
+            'I had trouble connecting just now. Please try again in a minute.',
+        },
+      ])
+    }
+  }
+
   // Primary button behavior
   const onPrimaryPress = async () => {
-    // No script yet → don't place a call, nudge to draft
-    if (!script) {
-      setWaitingForDraft(true);
-      const el = document.getElementById("nt-draft-input");
-      el?.focus();
-      return;
+    if (!script || !scriptIdFromQuery) {
+      setWaitingForDraft(true)
+      const el = document.getElementById('nt-draft-input')
+      el?.focus()
+      return
     }
 
-    // If we're already starting a call, ignore extra clicks
-    if (isStarting) return;
+    if (isStarting) return
 
-    // If not in an active call, start one
-    if (
-      tel.status === "idle" ||
-      tel.status === "failed" ||
-      tel.status === "ended"
-    ) {
-      setIsStarting(true);
+    // Use Twilio backend instead of mock
+    if (tel.status === 'idle' || tel.status === 'failed' || tel.status === 'ended') {
+      setIsStarting(true)
       try {
-        await tel.start(); // preparing → dialing → ringing → connected
+        const res = await fetch('/api/start-call', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scriptId: scriptIdFromQuery }),
+        })
+
+        if (!res.ok) {
+          // surface a failure in UI
+          console.error('Failed to start call', await res.text())
+          // optional: tel.setFailed()
+          return
+        }
+
+        const { callSid } = await res.json()
+        // optional: track callSid in state and let tel mock represent the UI state
+        tel.start()
       } finally {
-        setIsStarting(false);
+        setIsStarting(false)
       }
     } else {
-      // Any other status means "active-ish" → hang up
-      tel.hangup(); // status becomes "ended", button goes blue
+      tel.hangup()
     }
-  };
+  }
 
 
   const primaryIcon = useMemo(() => {
@@ -306,6 +382,27 @@ export default function AICallPage({
     return "End Call";
   }, [isActiveCall, tel.status, waitingForDraft, script]);
 
+  useEffect(() => {
+    if (tel.status !== 'ended' || !scriptIdFromQuery) return
+
+    ;(async () => {
+      const res = await fetch(`/api/call-summary?scriptId=${scriptIdFromQuery}`)
+      const { summaries: newSummaries } = await res.json()
+      if (newSummaries?.length) {
+        setSummaries(prev => [
+          ...prev,
+          ...newSummaries.map((s: any) => ({
+            id: uid('sum'),
+            header: s.header,
+            body: s.summary,
+            followups: s.followups,
+          })),
+        ])
+      }
+    })()
+  }, [tel.status, scriptIdFromQuery])
+
+
   // Add a new mock log when call ends or fails
   useEffect(() => {
     if (tel.status !== "ended" && tel.status !== "failed") return;
@@ -327,42 +424,6 @@ export default function AICallPage({
     setLogs((prev) => [entry, ...prev]);
     setSelectedLog(entry);
   }, [tel.status, script]);
-
-  // helper for inline draft-chat
-  function sendDraftChat() {
-    const text = chatInput.trim();
-    if (!text) return;
-
-    // add messages to the draft chat
-    setChatMsgs((m) => [
-      ...m,
-      { role: "user", content: text },
-      {
-        role: "assistant",
-        content: "Thanks — I’ll prepare a draft script below for your approval.",
-      },
-    ]);
-
-    setChatInput("");
-    if (waitingForDraft) setWaitingForDraft(false);
-
-    // after the first line the user sends, auto-create a basic script
-    if (!script) {
-      const now = Date.now();
-      setScript({
-        id: "draft-" + now,
-        contactName: "Clinic front desk",
-        targetPhone: "+1 (555) 000-0000",
-        reason: "Call clinic about visit / coverage",
-        language: "en-US",
-        body:
-          `Hi, this is No Trek calling on behalf of a patient.\n\n` +
-          `They described their situation as:\n` +
-          `"${text}".\n\n` +
-          `Can you help with next steps (scheduling, coverage, or follow-up)?`,
-      });
-    }
-  }
 
   return (
     <div className="min-h-screen bg-gradient-to-b from-[#0E5BD8] via-[#0A53C5] to-[#083F98] text-slate-900">
