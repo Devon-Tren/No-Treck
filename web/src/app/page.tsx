@@ -115,22 +115,32 @@ export default function AuthLandingPage() {
 
   function SplashIntro({ onDone }: { onDone: () => void }) {
     const [fade, setFade] = useState(false)
+
     useEffect(() => {
       const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      const sitTime = reduced ? 0 : 1000
-      const fadeDur = reduced ? 0 : 600
+      const sitTime = reduced ? 0 : 1100
+      const fadeDur = reduced ? 0 : 650
       const t1 = setTimeout(() => setFade(true), sitTime)
       const t2 = setTimeout(() => onDone(), sitTime + fadeDur)
-      return () => { clearTimeout(t1); clearTimeout(t2) }
+      return () => {
+        clearTimeout(t1)
+        clearTimeout(t2)
+      }
     }, [onDone])
-  
+
     return (
       <div
         aria-hidden
-        className={`fixed inset-0 z-50 grid place-items-center transition-opacity duration-700 ${fade ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
-        style={{ background: BRAND_BLUE }}
+        className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950 transition-opacity duration-700 ${
+          fade ? 'pointer-events-none opacity-0' : 'opacity-100'
+        }`}
       >
-        <div className="text-white font-extrabold tracking-tight italic text-6xl sm:text-7xl md:text-8xl select-none">
+        {/* animated orb backdrop */}
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute -top-40 -right-32 h-80 w-80 animate-[pulse_10s_ease-in-out_infinite] rounded-full bg-[#0E5BD8]/40 blur-3xl" />
+          <div className="absolute top-1/3 -left-40 h-96 w-96 rotate-12 animate-[spin_40s_linear_infinite] bg-gradient-to-tr from-[#0E5BD8]/25 via-sky-500/20 to-transparent blur-3xl" />
+        </div>
+        <div className="relative select-none text-5xl font-extrabold italic tracking-tight text-white drop-shadow-[0_0_40px_rgba(37,99,235,0.75)] sm:text-7xl md:text-8xl">
           NO TREK
         </div>
       </div>
