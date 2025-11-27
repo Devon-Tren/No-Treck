@@ -16,6 +16,8 @@ function LogoNT() {
   )
 }
 
+/* ============================== Sections ============================== */
+
 export default function AuthLandingPage() {
   const BRAND_BLUE = '#0E5BD8'
   const [showSplash, setShowSplash] = useState(true)

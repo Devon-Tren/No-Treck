@@ -5,38 +5,73 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import Link from 'next/link'
 
 /* ============================== Types ============================== */
-type RiskTone = 'low' | 'moderate' | 'elevated' | 'severe' | string
 
-type TaskStep = { id: string; text: string; done?: boolean }
-type TaskCitation = { id?: string; title: string; url: string; source?: string }
-type Task = {
+type RiskTone = 'low' | 'moderate' | 'severe' | string
+
+type TaskStatus = 'todo' | 'doing' | 'done'
+
+type CareTask = {
   id: string
   title: string
-  status: 'todo' | 'doing' | 'done'
-  urgency?: 'info' | 'elevated' | 'severe' | string
+  status: TaskStatus
   dueAt?: string | null
-  updatedAt?: string
-  rationale?: string
-  steps?: TaskStep[]
-  citations?: TaskCitation[]
-  // Optional extras if present from Intake/Places
-  phone?: string
-  placeName?: string
-  address?: string
-  url?: string
+  notes?: string
+  linkedPlaceId?: string
+  linkedInsightId?: string
+  createdAt?: string
+  fromIntake?: boolean
 }
-type Plan = {
+
+type TaskCitation = { title: string; url: string; source?: string }
+
+type PlaceSummary = {
+  id: string
+  name: string
+  address?: string
+  distance_km?: number
+  est_cost_min?: number
+  est_cost_max?: number
+  in_network?: boolean
+}
+
+type InsightSummary = {
   id: string
   title: string
-  createdAt: string
-  sourceSessionId?: string
+  body: string
+  urgency?: 'info' | 'elevated' | 'severe' | string
+}
+
+type IntakeExportPayload = {
+  from?: string
+  createdAt?: string
   risk?: RiskTone
-  solutionSteps?: string[]
-  tasks: Task[]
+  riskTrail?: RiskTone[]
+  insights?: InsightSummary[]
+  places?: PlaceSummary[]
+  tasks?: {
+    id: string
+    title: string
+    status: TaskStatus
+    dueAt?: string | null
+    notes?: string
+    linkedPlaceId?: string
+    linkedInsightId?: string
+  }[]
+}
+
+type CoachRole = 'user' | 'assistant'
+
+type CoachMessage = {
+  id: string
+  role: CoachRole
+  text: string
+  citations?: TaskCitation[]
 }
 
 /* ============================== Config ============================== */
+
 const BRAND_BLUE = '#0E5BD8'
+
 const ALLOWED_DOMAINS = [
   'nih.gov',
   'medlineplus.gov',
@@ -48,1409 +83,1147 @@ const ALLOWED_DOMAINS = [
   'cochranelibrary.com',
 ]
 
+const TASKS_PERSIST_KEY = 'nt_tasks_page_v2'
+const INTAKE_EXPORT_KEY = 'nt_intake_to_tasks_v1'
+
+const TASKS_COACH_SYSTEM_PROMPT = `
+You are Stella, the care-task coach for No Trek.
+
+Length of reply:
+- Do not reply in paragraphs reply in texts and if needed expand more but do not ramble on.
+- Do not go over 2-3 sentences per reply unless abosulutely neccessary, aim for 2 sentences.
+- Ask a question at the end if needed to give further clarity.
+- Be intuitive and look for user engagement.
+
+Context:
+- The user already did some intake or planning.
+- This page is about *doing the steps*, not diagnosing.
+- Your job is to turn a list of steps into something that feels doable, meaningful, and worth it.
+
+Style:
+- Sound like a calm, smart nurse / care navigator texting a friend.
+- Push gently, not with guilt. Make the “why” behind a task feel clear and personal.
+- Translate chaos into a small set of priorities. Less overwhelm, more “I know what to do next.”
+
+What you do here:
+- Explain why specific tasks matter (safety, clarity, peace of mind, money, time).
+- Help the user choose *which* tasks to do today vs later.
+- Break big steps into smaller ones if they feel stuck.
+- Suggest simple scripts for phone calls or messages.
+- Encourage pacing: it's okay to do one thing at a time.
+
+Boundaries:
+- You are not a doctor or emergency service.
+- Do NOT diagnose, prescribe, or recommend starting/stopping specific medications.
+- Keep guidance educational and motivational.
+- If a task describes a potential emergency (“go to ER”, “call 911”, etc.), reinforce that emergency steps should not be delayed.
+
+Evidence:
+- When you make factual medical claims or risk statements, attach citations from trusted domains only.
+- Motivational / emotional support does NOT need citations.
+`.trim()
+
 /* ============================== Utils ============================== */
-const uid = (p = 'x') => `${p}_${Math.random().toString(36).slice(2, 9)}`
-function clsx(...s: Array<string | false | null | undefined>) {
-  return s.filter(Boolean).join(' ')
-}
-function isToday(iso?: string | null) {
-  if (!iso) return false
-  const d = new Date(iso)
-  const n = new Date()
-  return (
-    d.getFullYear() === n.getFullYear() &&
-    d.getMonth() === n.getMonth() &&
-    d.getDate() === n.getDate()
-  )
-}
-function domainOf(url?: string) {
+
+const uid = (p = 'm') => `${p}_${Math.random().toString(36).slice(2, 9)}`
+const cx = (...xs: Array<string | false | null | undefined>) =>
+  xs.filter(Boolean).join(' ')
+const clamp = (n: number, a: number, b: number) => Math.max(a, Math.min(b, n))
+
+const domainOf = (url: string) => {
   try {
-    return new URL(String(url)).hostname.replace(/^www\./, '')
+    return new URL(url).hostname.replace(/^www\./, '')
   } catch {
     return ''
   }
 }
-function allowedOnly(cites?: TaskCitation[]) {
+
+const isDeclarative = (t?: string) => {
+  if (!t) return false
+  const s = t.trim()
+  return s.length > 0 && (!s.endsWith('?') || /[.!] /.test(s))
+}
+
+function filterAllowed(cites?: TaskCitation[]) {
   const seen = new Set<string>()
-  return (cites || []).filter((c) => {
-    if (!c?.url) return false
-    const d = domainOf(c.url)
-    const ok = ALLOWED_DOMAINS.some((ad) => d.endsWith(ad))
-    if (!ok || seen.has(c.url)) return false
-    seen.add(c.url)
+  return (cites || []).filter(ci => {
+    if (!ci?.url) return false
+    const d = domainOf(ci.url)
+    const ok = ALLOWED_DOMAINS.some(allow => d.endsWith(allow))
+    if (!ok || seen.has(ci.url)) return false
+    seen.add(ci.url)
     return true
   })
 }
-function fetchJSON<T = any>(url: string): Promise<T | null> {
-  return fetch(url, { cache: 'no-store' })
-    .then((r) => (r.ok ? (r.json() as Promise<T>) : null))
-    .catch(() => null)
-}
-async function fetchPlan(planId: string): Promise<Plan | null> {
-  for (const url of [`/api/no-trek/plan/${planId}`, `/api/plans/${planId}`]) {
-    const j = await fetchJSON<Plan>(url)
-    if (j) return j
+
+async function backfillCitations(text: string): Promise<TaskCitation[]> {
+  try {
+    const r = await fetch('/api/no-trek/cite', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, allowedDomains: ALLOWED_DOMAINS }),
+    })
+    if (!r.ok) return []
+    const j = await r.json()
+    return filterAllowed(j.citations || [])
+  } catch {
+    return []
   }
-  return null
-}
-function formatDue(iso?: string | null) {
-  if (!iso) return ''
-  const d = new Date(iso)
-  return `${d.toLocaleDateString()} ${d.toLocaleTimeString([], {
-    hour: '2-digit',
-    minute: '2-digit',
-  })}`
-}
-function escapeICalText(s: string) {
-  return s.replace(/([\\,;])/g, '\\$1').replace(/\n/g, '\\n')
 }
 
-/* ---------------- Splash: wordmark, fades out (Tasks) ---------------- */
+function riskColor(risk: RiskTone): string {
+  if (risk === 'severe') return 'border-red-400/70 text-red-100'
+  if (risk === 'moderate') return 'border-amber-400/70 text-amber-100'
+  return 'border-emerald-400/70 text-emerald-100'
+}
 
-function SplashIntro({ onDone }: { onDone: () => void }) {
-  const [fade, setFade] = useState(false)
+/* ============================== Background & Nav ============================== */
 
-  useEffect(() => {
-    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    const sitTime = reduced ? 0 : 1100
-    const fadeDur = reduced ? 0 : 650
-    const t1 = setTimeout(() => setFade(true), sitTime)
-    const t2 = setTimeout(() => onDone(), sitTime + fadeDur)
-    return () => {
-      clearTimeout(t1)
-      clearTimeout(t2)
-    }
-  }, [onDone])
+function BreathingBackground({ risk }: { risk: RiskTone }) {
+  const tint =
+    risk === 'severe'
+      ? 'rgba(248,113,113,0.75)'
+      : risk === 'moderate'
+      ? 'rgba(252,211,77,0.75)'
+      : 'rgba(56,189,248,0.75)'
 
   return (
-    <div
-      aria-hidden
-      className={`fixed inset-0 z-50 flex items-center justify-center bg-slate-950 transition-opacity duration-700 ${
-        fade ? 'opacity-0 pointer-events-none' : 'opacity-100'
-      }`}
-    >
-      {/* animated orb backdrop – same vibe as landing */}
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute -top-40 -right-32 h-80 w-80 rounded-full bg-[#0E5BD8]/40 blur-3xl animate-[pulse_10s_ease-in-out_infinite]" />
-        <div className="absolute top-1/3 -left-40 h-96 w-96 rotate-12 bg-gradient-to-tr from-[#0E5BD8]/25 via-sky-500/20 to-transparent blur-3xl animate-[spin_40s_linear_infinite]" />
+    <div aria-hidden className="pointer-events-none absolute inset-0">
+      <div
+        className="absolute inset-0 transition-[background] duration-500"
+        style={{
+          background:
+            'radial-gradient(1200px 800px at 80% 0%, rgba(15,118,255,0.28), transparent 60%), linear-gradient(180deg, #020617 0%, #020617 45%, #020617 100%)',
+        }}
+      />
+      <div
+        className="absolute inset-0 opacity-30"
+        style={{
+          backgroundImage:
+            'linear-gradient(90deg, rgba(148,163,184,0.18) 1px, transparent 1px), linear-gradient(180deg, rgba(148,163,184,0.16) 1px, transparent 1px)',
+          backgroundSize: '120px 120px',
+        }}
+      />
+      <div
+        className="absolute inset-0"
+        style={{
+          background: `radial-gradient(900px 640px at 72% 18%, ${tint}, transparent 60%)`,
+          filter: 'blur(58px)',
+          opacity: 0.28,
+          animation: 'softPulse 11s ease-in-out infinite',
+        }}
+      />
+      <div className="absolute inset-0 bg-[radial-gradient(900px_520px_at_center,transparent,rgba(0,0,0,0.55))]" />
+    </div>
+  )
+}
+
+function NavBar() {
+  const navLinks = [
+    { href: '/', label: 'Home' },
+    { href: '/intake', label: 'Intake' },
+    { href: '/tasks', label: 'Tasks' },
+    { href: '/explore', label: 'Explore' },
+    { href: '/about', label: 'About' },
+    { href: '/privacy', label: 'Privacy' },
+  ]
+
+  return (
+    <header className="border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-sm shadow-[0_8px_30px_rgba(15,23,42,0.85)]">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 lg:px-8">
+        <Link href="/" className="flex items-center gap-2">
+          <div className="grid h-8 w-8 place-items-center rounded-full bg-sky-500/95 text-[11px] font-black tracking-tight text-slate-950 shadow-[0_0_20px_rgba(56,189,248,0.9)]">
+            NT
+          </div>
+          <span className="text-xs font-semibold tracking-[0.26em] text-slate-100">
+            NO TREK
+          </span>
+        </Link>
+        <nav className="flex items-center gap-4">
+          <div className="hidden items-center gap-4 md:flex">
+            {navLinks.map(link => (
+              <Link
+                key={link.href}
+                href={link.href}
+                className={cx(
+                  'text-[11px] font-semibold uppercase tracking-[0.2em] transition-colors',
+                  link.href === '/tasks'
+                    ? 'text-sky-300'
+                    : 'text-slate-200/85 hover:text-sky-300',
+                )}
+              >
+                {link.label}
+              </Link>
+            ))}
+          </div>
+          <Link
+            href="/intake"
+            className="rounded-2xl bg-sky-500 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-950 shadow-[0_0_26px_rgba(56,189,248,0.9)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_40px_rgba(56,189,248,1)]"
+          >
+            Start with Stella
+          </Link>
+        </nav>
       </div>
-      <div className="relative select-none text-5xl sm:text-7xl md:text-8xl font-extrabold tracking-tight italic text-white drop-shadow-[0_0_40px_rgba(37,99,235,0.75)]">
-        Tasks
+
+      <div className="border-t border-slate-800/80 bg-slate-950/95 px-4 py-2 md:hidden">
+        <div className="mx-auto flex max-w-6xl flex-wrap gap-3">
+          {navLinks.map(link => (
+            <Link
+              key={link.href}
+              href={link.href}
+              className={cx(
+                'rounded-full border border-slate-700/80 bg-slate-900/80 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em]',
+                link.href === '/tasks'
+                  ? 'text-sky-300 border-sky-400/70'
+                  : 'text-slate-200/90',
+              )}
+            >
+              {link.label}
+            </Link>
+          ))}
+        </div>
+      </div>
+    </header>
+  )
+}
+
+function EmergencyBanner() {
+  return (
+    <div className="border-b border-red-500/30 bg-slate-950/80 text-[11px] text-slate-200 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-2 lg:px-8">
+        <p>If this is an emergency, call 911 or your local emergency number.</p>
+        <span className="hidden rounded-full border border-red-500/70 bg-red-500/15 px-3 py-1 text-[10px] font-semibold tracking-[0.18em] text-red-200 sm:inline">
+          NOT FOR EMERGENCIES
+        </span>
       </div>
     </div>
   )
 }
 
 /* ============================== Page ============================== */
-export default function TasksPage() {
-  const [plan, setPlan] = useState<Plan | null>(null)
-  const [selectedId, setSelectedId] = useState<string | null>(null)
-  const [connected, setConnected] = useState<boolean | null>(null)
-  const [splashDone, setSplashDone] = useState(false)
 
-  // Filters / options
-  const [query, setQuery] = useState('')
-  const [showEvidenceLock, setShowEvidenceLock] = useState(true)
-  const [showDone, setShowDone] = useState(true)
-  const [sourcesOpen, setSourcesOpen] = useState(false)
-  const [urgencyFilter, setUrgencyFilter] = useState<'all' | 'info' | 'elevated' | 'severe'>(
-    'all',
+export default function TasksPage() {
+  const [risk, setRisk] = useState<RiskTone>('low')
+  const [riskTrail, setRiskTrail] = useState<RiskTone[]>([])
+  const [tasks, setTasks] = useState<CareTask[]>([])
+  const [places, setPlaces] = useState<PlaceSummary[]>([])
+  const [insights, setInsights] = useState<InsightSummary[]>([])
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null)
+
+  const [coachMessages, setCoachMessages] = useState<CoachMessage[]>([])
+  const [coachDraft, setCoachDraft] = useState('')
+  const [coachSending, setCoachSending] = useState(false)
+
+  const [coachEvidenceLock, setCoachEvidenceLock] = useState(true)
+  const [coachPreferCitations, setCoachPreferCitations] = useState(true)
+  const [coachGateMsg, setCoachGateMsg] = useState<string | null>(null)
+
+  const [engineConnected, setEngineConnected] = useState<boolean | null>(null)
+
+  const [filter, setFilter] = useState<'all' | 'today' | 'week' | 'done'>('all')
+  const [newTitle, setNewTitle] = useState('')
+  const [newNotes, setNewNotes] = useState('')
+  const [newDue, setNewDue] = useState('')
+  const [episodeCreatedAt, setEpisodeCreatedAt] = useState<string | null>(null)
+  const [fromLabel, setFromLabel] = useState<string | null>(null)
+
+  /* ---------- Load from localStorage / intake export ---------- */
+
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem(TASKS_PERSIST_KEY)
+      if (stored) {
+        const snap = JSON.parse(stored)
+        if (Array.isArray(snap.tasks)) setTasks(snap.tasks)
+        if (Array.isArray(snap.places)) setPlaces(snap.places)
+        if (Array.isArray(snap.insights)) setInsights(snap.insights)
+        if (snap.risk) setRisk(snap.risk)
+        if (Array.isArray(snap.riskTrail)) setRiskTrail(snap.riskTrail)
+        if (typeof snap.episodeCreatedAt === 'string') setEpisodeCreatedAt(snap.episodeCreatedAt)
+        if (typeof snap.fromLabel === 'string') setFromLabel(snap.fromLabel)
+        return
+      }
+
+      const exported = localStorage.getItem(INTAKE_EXPORT_KEY)
+      if (exported) {
+        const payload: IntakeExportPayload = JSON.parse(exported)
+        const importedTasks: CareTask[] = (payload.tasks || []).map(t => ({
+          id: t.id || uid('t'),
+          title: t.title,
+          status: t.status || 'todo',
+          dueAt: t.dueAt ?? null,
+          notes: t.notes,
+          linkedPlaceId: t.linkedPlaceId,
+          linkedInsightId: t.linkedInsightId,
+          createdAt: payload.createdAt || new Date().toISOString(),
+          fromIntake: true,
+        }))
+        setTasks(importedTasks)
+        setPlaces(payload.places || [])
+        setInsights(payload.insights || [])
+        if (payload.risk) setRisk(payload.risk)
+        if (Array.isArray(payload.riskTrail)) setRiskTrail(payload.riskTrail)
+        if (payload.createdAt) setEpisodeCreatedAt(payload.createdAt)
+        setFromLabel(payload.from || 'Intake')
+        localStorage.removeItem(INTAKE_EXPORT_KEY)
+      }
+    } catch {
+      // ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    try {
+      const snap = {
+        tasks,
+        places,
+        insights,
+        risk,
+        riskTrail,
+        episodeCreatedAt,
+        fromLabel,
+      }
+      localStorage.setItem(TASKS_PERSIST_KEY, JSON.stringify(snap))
+    } catch {
+      // ignore
+    }
+  }, [tasks, places, insights, risk, riskTrail, episodeCreatedAt, fromLabel])
+
+  /* ---------- Engine status ---------- */
+
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const r = await fetch('/api/no-trek/status', { cache: 'no-store' })
+        const j = await r.json()
+        setEngineConnected('connected' in j ? !!j.connected : true)
+      } catch {
+        setEngineConnected(false)
+      }
+    })()
+  }, [])
+
+  /* ---------- Task helpers ---------- */
+
+  const today = new Date()
+
+  function isSameDay(a: Date, b: Date) {
+    return (
+      a.getFullYear() === b.getFullYear() &&
+      a.getMonth() === b.getMonth() &&
+      a.getDate() === b.getDate()
+    )
+  }
+
+  function isThisWeek(d: Date, now: Date) {
+    const oneDay = 24 * 60 * 60 * 1000
+    const diff = (d.getTime() - now.getTime()) / oneDay
+    return diff >= 0 && diff <= 7
+  }
+
+  const sortedTasks = useMemo(() => {
+    const copy = [...tasks]
+    copy.sort((a, b) => {
+      const order: Record<TaskStatus, number> = { todo: 0, doing: 1, done: 2 }
+      const sDiff = order[a.status] - order[b.status]
+      if (sDiff !== 0) return sDiff
+
+      if (a.dueAt && b.dueAt) {
+        const ad = new Date(a.dueAt).getTime()
+        const bd = new Date(b.dueAt).getTime()
+        if (!Number.isNaN(ad) && !Number.isNaN(bd)) return ad - bd
+      } else if (a.dueAt) {
+        return -1
+      } else if (b.dueAt) {
+        return 1
+      }
+
+      const ac = a.createdAt ? new Date(a.createdAt).getTime() : 0
+      const bc = b.createdAt ? new Date(b.createdAt).getTime() : 0
+      return ac - bc
+    })
+    return copy
+  }, [tasks])
+
+  const filteredTasks = useMemo(() => {
+    if (filter === 'all') return sortedTasks
+    if (filter === 'done') return sortedTasks.filter(t => t.status === 'done')
+
+    return sortedTasks.filter(t => {
+      if (!t.dueAt) return false
+      const d = new Date(t.dueAt)
+      if (Number.isNaN(d.getTime())) return false
+      if (filter === 'today') return isSameDay(d, today)
+      if (filter === 'week') return isThisWeek(d, today)
+      return true
+    })
+  }, [sortedTasks, filter])
+
+  const stats = useMemo(() => {
+    const total = tasks.length
+    const done = tasks.filter(t => t.status === 'done').length
+    const doing = tasks.filter(t => t.status === 'doing').length
+    const todo = tasks.filter(t => t.status === 'todo').length
+    return { total, done, doing, todo }
+  }, [tasks])
+
+  const selectedTask = useMemo(
+    () => tasks.find(t => t.id === selectedTaskId) || null,
+    [tasks, selectedTaskId],
   )
 
-  // New task composer
-  const [newTitle, setNewTitle] = useState('')
-  const [newRationale, setNewRationale] = useState('')
-  const [newUrgency, setNewUrgency] = useState<'info' | 'elevated' | 'severe'>('info')
-  const [askAISteps, setAskAISteps] = useState(true)
-  const [creatingTask, setCreatingTask] = useState(false)
+  function upsertTask(newTask: CareTask) {
+    setTasks(prev => {
+      const idx = prev.findIndex(t => t.id === newTask.id)
+      if (idx === -1) return [newTask, ...prev]
+      const copy = [...prev]
+      copy[idx] = newTask
+      return copy
+    })
+  }
 
-  // AI helper for steps
-  const [designingStepsId, setDesigningStepsId] = useState<string | null>(null)
-  const [coachMsg, setCoachMsg] = useState<string | null>(null)
+  function toggleTaskStatus(id: string) {
+    setTasks(prev =>
+      prev.map(t => {
+        if (t.id !== id) return t
+        const next: TaskStatus =
+          t.status === 'todo' ? 'doing' : t.status === 'doing' ? 'done' : 'todo'
+        return { ...t, status: next, updatedAt: new Date().toISOString() }
+      }),
+    )
+  }
 
-  // Manual step composer (for selected task)
-  const [stepDraft, setStepDraft] = useState('')
-  useEffect(() => {
-    setStepDraft('')
-  }, [selectedId])
-
-  // Notifications
-  const [notificationSupported, setNotificationSupported] = useState(false)
-  const [notificationsEnabled, setNotificationsEnabled] = useState(false)
-  const [notified, setNotified] = useState<Record<string, boolean>>({})
-
-  // Import by ?planId=
-  useEffect(() => {
-    const u = new URL(window.location.href)
-    const id = u.searchParams.get('planId') || u.searchParams.get('id')
-    if (!id) return
-    ;(async () => {
-      const p = await fetchPlan(id)
-      if (p) {
-        setPlan(p)
-        const firstActive = p.tasks?.find((t) => t.status !== 'done')?.id
-        setSelectedId(firstActive || p.tasks?.[0]?.id || null)
-      }
-    })()
-  }, [])
-
-  // AI connection
-  useEffect(() => {
-    ;(async () => {
-      try {
-        const j = await fetchJSON<{ connected: boolean }>('/api/no-trek/status')
-        setConnected(j ? !!j.connected : false)
-      } catch {
-        setConnected(false)
-      }
-    })()
-  }, [])
-
-  // Notification capability
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    if ('Notification' in window) {
-      setNotificationSupported(true)
-      try {
-        setNotificationsEnabled(Notification.permission === 'granted')
-      } catch {
-        setNotificationsEnabled(false)
-      }
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!notificationSupported || !notificationsEnabled) return
-    if (typeof window === 'undefined') return
-
-    const handle = window.setInterval(() => {
-      const now = Date.now()
-      ;(plan?.tasks || []).forEach((t) => {
-        if (!t.dueAt || t.status === 'done') return
-        const dueTs = new Date(t.dueAt).getTime()
-        const delta = dueTs - now
-        // Notify within ~5 minutes before or shortly after due time
-        if (delta < 5 * 60 * 1000 && delta > -10 * 60 * 1000) {
-          setNotified((prev) => {
-            if (prev[t.id]) return prev
-            try {
-              if (Notification.permission === 'granted') {
-                new Notification(t.title, {
-                  body: t.rationale || t.placeName || 'No Trek task reminder',
-                  tag: t.id,
-                })
-              }
-            } catch {
-              // ignore
-            }
-            return { ...prev, [t.id]: true }
-          })
-        }
-      })
-    }, 60_000)
-
-    return () => window.clearInterval(handle)
-  }, [notificationSupported, notificationsEnabled, plan?.tasks])
-
-  async function enableNotifications() {
-    if (typeof window === 'undefined' || !('Notification' in window)) return
-    try {
-      const perm = await Notification.requestPermission()
-      setNotificationsEnabled(perm === 'granted')
-    } catch {
-      setNotificationsEnabled(false)
+  function clearDoneTasks() {
+    setTasks(prev => prev.filter(t => t.status !== 'done'))
+    if (selectedTask && selectedTask.status === 'done') {
+      setSelectedTaskId(null)
     }
   }
 
-  // Derived: filtered tasks
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase()
-    const tasks = (plan?.tasks || []).filter((t) => {
-      if (showEvidenceLock && allowedOnly(t.citations).length === 0) return false
-      if (urgencyFilter !== 'all' && (t.urgency || 'info') !== urgencyFilter) return false
+  function handleAddTask() {
+    const title = newTitle.trim()
+    if (!title) return
+    const task: CareTask = {
+      id: uid('t'),
+      title,
+      status: 'todo',
+      notes: newNotes.trim() || undefined,
+      dueAt: newDue ? new Date(newDue).toISOString() : null,
+      createdAt: new Date().toISOString(),
+      fromIntake: false,
+    }
+    setTasks(prev => [task, ...prev])
+    setNewTitle('')
+    setNewNotes('')
+    setNewDue('')
+    if (!selectedTaskId) setSelectedTaskId(task.id)
+  }
 
-      if (!q) return true
-      const hay = [
-        t.title,
-        t.rationale,
-        ...(t.steps || []).map((s) => s.text),
-        ...(t.citations || []).map((c) => `${c.title} ${c.source} ${c.url}`),
+  /* ---------- Coach: send & ask Stella ---------- */
+
+  async function sendCoach(textOverride?: string) {
+    const text = (textOverride ?? coachDraft).trim()
+    if (!text) return
+
+    const userMsg: CoachMessage = {
+      id: uid(),
+      role: 'user',
+      text,
+    }
+    setCoachMessages(prev => [...prev, userMsg])
+    if (textOverride === undefined) setCoachDraft('')
+    setCoachSending(true)
+    setCoachGateMsg(null)
+
+    const aId = uid('coach_a')
+    setCoachMessages(prev => [...prev, { id: aId, role: 'assistant', text: '' }])
+
+    try {
+      const payloadMessages: any[] = [
+        { role: 'system', content: TASKS_COACH_SYSTEM_PROMPT },
+        ...coachMessages.map(m => ({ role: m.role, content: m.text })),
+        { role: 'user', content: userMsg.text },
       ]
-        .join(' ')
-        .toLowerCase()
-      return hay.includes(q)
-    })
-    return tasks
-  }, [plan, query, showEvidenceLock, urgencyFilter])
 
-  // Grouping
-  const groups = useMemo(() => {
-    const today: Task[] = []
-    const upcoming: Task[] = []
-    const done: Task[] = []
-    for (const t of filtered) {
-      if (t.status === 'done') {
-        done.push(t)
-        continue
-      }
-      if (!t.dueAt || isToday(t.dueAt)) today.push(t)
-      else upcoming.push(t)
-    }
-    return { today, upcoming, done }
-  }, [filtered])
-
-  // Progress
-  const total = plan?.tasks?.length || 0
-  const completed = (plan?.tasks || []).filter((t) => t.status === 'done').length
-  const progressPct = total ? Math.round((completed / total) * 100) : 0
-
-  const selected = (plan?.tasks || []).find((t) => t.id === selectedId) || null
-
-  function setPlanTasks(updater: (prev: Task[]) => Task[]) {
-    if (!plan) return
-    setPlan({ ...plan, tasks: updater(plan.tasks || []) })
-  }
-
-  function toggleComplete(id: string) {
-    setPlanTasks((prev) =>
-      prev.map((t) =>
-        t.id === id
-          ? {
-              ...t,
-              status: t.status === 'done' ? 'todo' : 'done',
-              updatedAt: new Date().toISOString(),
-            }
-          : t,
-      ),
-    )
-  }
-  function toggleStep(taskId: string, stepId: string) {
-    setPlanTasks((prev) =>
-      prev.map((t) => {
-        if (t.id !== taskId) return t
-        return {
-          ...t,
-          steps: (t.steps || []).map((s) =>
-            s.id === stepId ? { ...s, done: !s.done } : s,
-          ),
-          updatedAt: new Date().toISOString(),
-        }
-      }),
-    )
-  }
-  function setDue(taskId: string, iso?: string) {
-    setPlanTasks((prev) =>
-      prev.map((t) =>
-        t.id === taskId
-          ? { ...t, dueAt: iso || null, updatedAt: new Date().toISOString() }
-          : t,
-      ),
-    )
-  }
-
-  // Quick dates
-  function quickDue(when: 'today' | 'tmrwAM' | 'weekend') {
-    if (!selected) return
-    const now = new Date()
-    let d = new Date()
-    if (when === 'today') {
-      d.setHours(Math.min(23, now.getHours() + 3), 0, 0, 0)
-    } else if (when === 'tmrwAM') {
-      d = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate() + 1,
-        9,
-        0,
-        0,
-        0,
-      )
-    } else {
-      const day = now.getDay()
-      const add = day === 6 ? 0 : day === 0 ? 0 : 6 - day
-      d = new Date(
-        now.getFullYear(),
-        now.getMonth(),
-        now.getDate() + add,
-        10,
-        0,
-        0,
-        0,
-      )
-    }
-    setDue(selected.id, d.toISOString())
-  }
-
-  // Add manual step to selected task
-  function addManualStep() {
-    if (!selectedId || !stepDraft.trim()) return
-    const text = stepDraft.trim()
-    const newStep: TaskStep = { id: uid('s'), text, done: false }
-    setPlanTasks((prev) =>
-      prev.map((t) =>
-        t.id === selectedId
-          ? {
-              ...t,
-              steps: [...(t.steps || []), newStep],
-              updatedAt: new Date().toISOString(),
-            }
-          : t,
-      ),
-    )
-    setStepDraft('')
-  }
-
-  // Sources (across visible tasks)
-  const sources = useMemo(() => {
-    const seen = new Set<string>()
-    const out: TaskCitation[] = []
-    filtered.forEach((t) =>
-      allowedOnly(t.citations).forEach((c) => {
-        if (!seen.has(c.url)) {
-          seen.add(c.url!)
-          out.push(c)
-        }
-      }),
-    )
-    return out
-  }, [filtered])
-
-  // Exporters
-  function exportTxt() {
-    const lines: string[] = []
-    lines.push(`No Trek — Plan: ${plan?.title || ''}`)
-    lines.push(
-      `Risk: ${plan?.risk || '—'} | Created: ${
-        plan ? new Date(plan.createdAt).toLocaleString() : '—'
-      }`,
-    )
-    lines.push(`Progress: ${completed}/${total} (${progressPct}%)`)
-    lines.push('')
-    ;(plan?.tasks || []).forEach((t) => {
-      lines.push(
-        `- [${
-          t.status === 'done' ? 'x' : ' '
-        }] ${t.title}${t.dueAt ? ` — due ${formatDue(t.dueAt)}` : ''}`,
-      )
-      if (t.rationale) lines.push(`    Why: ${t.rationale}`)
-      ;(t.steps || []).forEach((s) =>
-        lines.push(`    • [${s.done ? 'x' : ' '}] ${s.text}`),
-      )
-      const cites = allowedOnly(t.citations)
-      if (cites.length) {
-        lines.push('    Sources:')
-        cites.forEach((c) => lines.push(`      - ${c.title} — ${c.url}`))
-      }
-    })
-    const blob = new Blob([lines.join('\n')], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `no-trek-plan-${plan?.id || uid('plan')}.txt`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
-  }
-
-  function exportICS() {
-    // Simple VEVENTs (one per task with dueAt)
-    const stamp = new Date().toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z'
-    const rows: string[] = []
-    rows.push('BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//No Trek//Tasks//EN')
-    ;(plan?.tasks || []).forEach((t) => {
-      if (!t.dueAt) return
-      const dt = new Date(t.dueAt).toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z'
-      rows.push('BEGIN:VEVENT')
-      rows.push(`UID:${t.id}@no-trek`)
-      rows.push(`DTSTAMP:${stamp}`)
-      rows.push(`DTSTART:${dt}`)
-      rows.push(`SUMMARY:${escapeICalText(t.title)}`)
-      rows.push(`DESCRIPTION:${escapeICalText(t.rationale || '')}`)
-      rows.push('END:VEVENT')
-    })
-    rows.push('END:VCALENDAR')
-    const blob = new Blob([rows.join('\r\n')], { type: 'text/calendar' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `no-trek-plan-${plan?.id || uid('plan')}.ics`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    URL.revokeObjectURL(url)
-  }
-
-  // Concierge call
-  const [callViz, setCallViz] = useState<{
-    status: 'idle' | 'calling' | 'ok' | 'failed'
-    transcript: string[]
-  }>({ status: 'idle', transcript: [] })
-
-  async function requestAICall(task?: Task) {
-    setCallViz({
-      status: 'calling',
-      transcript: ['Dialing…', 'Navigating phone tree…'],
-    })
-    try {
-      const r = await fetch('/api/no-trek/call', {
+      const r = await fetch('/api/no-trek/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          task: {
-            id: task?.id,
-            title: task?.title,
-            phone: task?.phone,
-            placeName: task?.placeName,
-            address: task?.address,
-          },
+          messages: payloadMessages,
+          allowedDomains: ALLOWED_DOMAINS,
         }),
       })
-      const ok = r.ok
-      setCallViz((v) => ({
-        status: ok ? 'ok' : 'failed',
-        transcript: [...v.transcript, ok ? 'Connected.' : 'Call init failed.'],
-      }))
-    } catch {
-      setCallViz((v) => ({
-        status: 'failed',
-        transcript: [...v.transcript, 'Could not place the call.'],
-      }))
-    }
-  }
 
-  // AI helper: suggest rationale + steps for a task
-  async function autoDesignSteps(taskId: string, snapshot?: Task) {
-    const task = snapshot || (plan?.tasks || []).find((t) => t.id === taskId)
-    if (!task) return
-    setDesigningStepsId(taskId)
-    setCoachMsg(null)
-    try {
-      const res = await fetch('/api/no-trek/tasks/coach', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ task, allowedDomains: ALLOWED_DOMAINS }),
-      })
-      if (!res.ok) {
-        if (res.status === 404) {
-          // Friendlier handling for your missing endpoint instead of dumping HTML
-          setCoachMsg(
-            'AI steps are not set up yet. You can still add your own checklist for now.',
-          )
-        } else {
-          setCoachMsg(
-            `AI helper temporarily unavailable (status ${res.status}). You can keep using manual steps.`,
-          )
-        }
+      if (!r.ok) {
+        const body = await r.text()
+        await typeCoachFull(aId, `Error: ${r.status} — ${body.slice(0, 200)}`)
+        setCoachSending(false)
         return
       }
-      const data = (await res.json()) as {
-        rationale?: string
-        steps?: string[]
-        citations?: TaskCitation[]
-        solutionSteps?: string[]
-      }
-      const newSteps = (data.steps || []).map((text) => ({ id: uid('s'), text }))
-      const newCites = allowedOnly(data.citations)
 
-      setPlan((prev) => {
-        if (!prev) return prev
-        return {
-          ...prev,
-          solutionSteps:
-            data.solutionSteps && data.solutionSteps.length
-              ? data.solutionSteps
-              : prev.solutionSteps,
-          tasks: (prev.tasks || []).map((t) =>
-            t.id === taskId
-              ? {
-                  ...t,
-                  rationale: data.rationale || t.rationale,
-                  steps: newSteps.length ? newSteps : t.steps,
-                  citations: newCites.length ? newCites : t.citations,
-                  updatedAt: new Date().toISOString(),
-                }
-              : t,
-          ),
+      const data: { text?: string; citations?: TaskCitation[] } = await r.json()
+      let finalCites = filterAllowed(data.citations)
+
+      if (coachPreferCitations && isDeclarative(data.text) && finalCites.length === 0) {
+        const back = await backfillCitations(data.text || '')
+        if (back.length) {
+          finalCites = back
+        } else if (coachEvidenceLock) {
+          setCoachGateMsg(
+            'Some parts of this might not be fully citation-backed — treat this as coaching and education, not a diagnosis.',
+          )
         }
-      })
-      if (newSteps.length) setCoachMsg('AI suggested steps added.')
-    } catch {
-      setCoachMsg(
-        'AI helper is currently unavailable. Please try again later or add steps manually.',
+      }
+
+      if (finalCites.length > 0) {
+        setCoachMessages(prev =>
+          prev.map(m => (m.id === aId ? { ...m, citations: finalCites } : m)),
+        )
+      }
+
+      await typeCoachFull(aId, data.text || '')
+    } catch (e: any) {
+      await typeCoachFull(
+        aId,
+        `I couldn't reach the coach engine. (${String(e?.message || e)})`,
       )
     } finally {
-      setDesigningStepsId(null)
+      setCoachSending(false)
     }
   }
 
-  // New task creation (with optional AI)
-  async function createTaskFromDraft() {
-    const title = newTitle.trim()
-    if (!title || creatingTask) return
-    setCreatingTask(true)
-    setCoachMsg(null)
-
-    const taskId = uid('t')
-    const baseTask: Task = {
-      id: taskId,
-      title,
-      status: 'todo',
-      urgency: newUrgency,
-      dueAt: null,
-      rationale: newRationale.trim() || undefined,
-      steps: [],
-      citations: [],
-      updatedAt: new Date().toISOString(),
-    }
-
-    setPlan((prev) => {
-      const base: Plan =
-        prev ?? {
-          id: uid('plan'),
-          title: 'My follow-ups',
-          createdAt: new Date().toISOString(),
-          tasks: [],
-          risk: 'low',
-          solutionSteps: [],
-        }
-      return { ...base, tasks: [baseTask, ...(base.tasks || [])] }
-    })
-    setSelectedId(taskId)
-    setNewTitle('')
-    setNewRationale('')
-
-    if (askAISteps && connected) {
-      await autoDesignSteps(taskId, { ...baseTask })
-    }
-    setCreatingTask(false)
+  function typeCoachInto(id: string, chunk: string) {
+    setCoachMessages(prev =>
+      prev.map(m => (m.id === id ? { ...m, text: (m.text || '') + chunk } : m)),
+    )
   }
 
-  // Risk badge tone
-  function riskBadgeClass(r?: RiskTone) {
-    if (r === 'severe') return 'border-red-400/60 text-red-200'
-    if (r === 'elevated' || r === 'moderate') return 'border-amber-400/60 text-amber-100'
-    return 'border-emerald-400/60 text-emerald-100'
+  async function typeCoachFull(id: string, full: string) {
+    if (!full) return
+    const step = 18
+    for (let i = 0; i < full.length; i += step) {
+      typeCoachInto(id, full.slice(i, i + step))
+      await new Promise(r => setTimeout(r, 10))
+    }
   }
+
+  async function handleAskStellaWhy(task: CareTask) {
+    setSelectedTaskId(task.id)
+    const place = task.linkedPlaceId
+      ? places.find(p => p.id === task.linkedPlaceId) || null
+      : null
+    const insight = task.linkedInsightId
+      ? insights.find(i => i.id === task.linkedInsightId) || null
+      : null
+
+    const contextLines: string[] = []
+    contextLines.push(`Task title: "${task.title}"`)
+    if (task.notes) contextLines.push(`Notes: ${task.notes}`)
+    if (place)
+      contextLines.push(
+        `Linked place: ${place.name}${
+          typeof place.distance_km === 'number' ? `, ${place.distance_km.toFixed(1)} km away` : ''
+        }`,
+      )
+    if (insight) {
+      contextLines.push(`Linked insight: ${insight.title}`)
+      contextLines.push(`Insight summary: ${insight.body}`)
+    }
+    if (task.dueAt) {
+      const d = new Date(task.dueAt)
+      if (!Number.isNaN(d.getTime())) {
+        contextLines.push(`Due around: ${d.toLocaleString()}`)
+      }
+    }
+
+    const prompt = [
+      'Can you explain why this specific care step matters, in simple terms, and give me a gentle push to actually do it?',
+      '',
+      ...contextLines,
+    ].join('\n')
+
+    await sendCoach(prompt)
+  }
+
+  /* ---------- Derived episode meta ---------- */
+
+  const episodeLabel = useMemo(() => {
+    if (!episodeCreatedAt) return fromLabel || 'Current care plan'
+    const d = new Date(episodeCreatedAt)
+    if (Number.isNaN(d.getTime())) return fromLabel || 'Current care plan'
+    const dateStr = d.toLocaleDateString()
+    return `${fromLabel || 'Care plan'} · started ${dateStr}`
+  }, [episodeCreatedAt, fromLabel])
+
+  const openCount = stats.total - stats.done
+
+  const riskBadgeLabel =
+    risk === 'severe'
+      ? 'High-risk episode — stay on top of these steps.'
+      : risk === 'moderate'
+      ? 'Moderate risk — these steps help keep things from escalating.'
+      : 'Low risk — focus is on clarity and staying ahead of problems.'
+
+  /* ============================== Render ============================== */
 
   return (
     <main
-      className="relative min-h-screen overflow-hidden bg-slate-950 text-slate-50"
-      style={{ ['--brand-blue' as any]: BRAND_BLUE } as CSSProperties}
+      className="relative min-h-dvh overflow-hidden bg-slate-950 text-slate-50"
+      style={
+        {
+          ['--brand-blue' as any]: BRAND_BLUE,
+        } as CSSProperties
+      }
     >
-      {/* Background: match landing page aesthetic */}
-      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
-        <div className="absolute -top-40 -right-32 h-80 w-80 rounded-full bg-[#0E5BD8]/25 blur-3xl animate-[pulse_14s_ease-in-out_infinite]" />
-        <div className="absolute top-1/3 -left-40 h-96 w-96 rotate-12 bg-gradient-to-tr from-[#0E5BD8]/20 via-sky-500/10 to-transparent blur-3xl animate-[spin_50s_linear_infinite]" />
-        <div className="absolute bottom-[-20%] right-[-10%] h-72 w-72 rounded-full bg-sky-400/15 blur-3xl animate-[pulse_18s_ease-in-out_infinite]" />
-        <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,_rgba(15,23,42,0)_0,_#020617_55%)]" />
-      </div>
-
-      {!splashDone && <SplashIntro onDone={() => setSplashDone(true)} />}
-
-      <div
-        className={`relative z-10 mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 py-8 transition-opacity duration-700 ${
-          splashDone ? 'opacity-100' : 'opacity-0'
-        }`}
-      >
-        {/* Header */}
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div className="space-y-2">
-            {/* Breadcrumbs for smooth navigation from Landing / Intake */}
-            <nav className="flex items-center gap-2 text-[11px] text-slate-300/80">
-              <Link href="/" className="hover:text-slate-100 transition-colors">
-                Home
-              </Link>
-              <span className="opacity-50">/</span>
-              <Link href="/intake" className="hover:text-slate-100 transition-colors">
-                Intake
-              </Link>
-              <span className="opacity-50">/</span>
-              <span className="text-slate-100">Tasks</span>
-            </nav>
-
-            <div className="flex flex-wrap items-center gap-3">
-              <div className="text-2xl sm:text-3xl font-extrabold tracking-tight italic">
-                Tasks
-              </div>
-              <div className="text-xs text-slate-200/80 hidden sm:block">
-                Your living care map after Intake — organized, scheduled, and backed by
-                sources.
-              </div>
-            </div>
-
-            {plan && (
-              <div className="inline-flex flex-wrap items-center gap-2 text-[11px] text-slate-200/80">
-                <span className="rounded-full border border-slate-700 bg-slate-900/80 px-3 py-1">
-                  Plan:&nbsp;
-                  <span className="font-medium text-slate-50">{plan.title}</span>
-                </span>
-                {plan.sourceSessionId && (
-                  <span className="rounded-full border border-slate-700/70 bg-slate-900/70 px-2.5 py-1">
-                    From session&nbsp;{plan.sourceSessionId}
-                  </span>
-                )}
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2">
-            <span
-              className={clsx(
-                'inline-flex items-center gap-2 rounded-full border-[2px] bg-transparent px-2.5 py-1 text-xs',
-                riskBadgeClass(plan?.risk),
-              )}
-            >
-              <span className="h-1.5 w-1.5 rounded-full bg-current" /> Risk:{' '}
-              {plan?.risk ?? '—'}
-            </span>
-            <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-700 bg-slate-900/70 px-3 py-1 backdrop-blur">
-              <span
-                className={clsx(
-                  'h-2 w-2 rounded-full',
-                  connected
-                    ? 'bg-emerald-400'
-                    : connected === false
-                    ? 'bg-rose-400'
-                    : 'bg-zinc-400',
-                )}
-              />
-              <span className="text-xs text-slate-100/90">
-                {connected === null ? 'Checking engine' : connected ? 'Stella linked' : 'Base engine'}
-              </span>
-            </div>
-            <button
-              onClick={() => setSourcesOpen(true)}
-              className="rounded-full px-3 py-1 text-xs text-slate-100/90 hover:bg-slate-900 border-[2px] border-slate-700/80"
-            >
-              Sources ({sources.length})
-            </button>
-            <button
-              onClick={exportTxt}
-              className="rounded-full px-3 py-1 text-xs text-slate-100/90 hover:bg-slate-900 border-[2px] border-slate-700/80"
-            >
-              Export .txt
-            </button>
-            <button
-              onClick={exportICS}
-              className="rounded-full px-3 py-1 text-xs text-slate-100/90 hover:bg-slate-900 border-[2px] border-slate-700/80"
-            >
-              Export .ics
-            </button>
-          </div>
-        </header>
-
-        {/* Top controls */}
-        <div className="mt-5 flex flex-wrap items-center gap-3">
-          <div className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/80 backdrop-blur px-3 py-1.5">
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="Search tasks, steps, or sources…"
-              className="bg-transparent text-sm text-slate-50 outline-none placeholder:text-slate-400 min-w-[16ch]"
-              aria-label="Search tasks"
-            />
-          </div>
-
-          <label className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100/90">
-            <input
-              type="checkbox"
-              checked={showEvidenceLock}
-              onChange={(e) => setShowEvidenceLock(e.target.checked)}
-              className="h-3.5 w-3.5 bg-transparent"
-            />
-            Evidence lock
-          </label>
-
-          <label className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100/90">
-            <input
-              type="checkbox"
-              checked={showDone}
-              onChange={(e) => setShowDone(e.target.checked)}
-              className="h-3.5 w-3.5 bg-transparent"
-            />
-            Show completed
-          </label>
-
-          {/* Urgency filter to focus the list */}
-          <div className="inline-flex items-center gap-2 rounded-full border border-slate-700 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100/90">
-            <span className="text-slate-300/90">Focus</span>
-            {(
-              [
-                ['all', 'All'],
-                ['info', 'Routine'],
-                ['elevated', 'Elevated'],
-                ['severe', 'Severe'],
-              ] as const
-            ).map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setUrgencyFilter(value)}
-                className={clsx(
-                  'rounded-full px-2.5 py-0.5 border text-[11px] transition-colors',
-                  urgencyFilter === value
-                    ? 'border-slate-200 bg-slate-100/10 text-slate-50'
-                    : 'border-transparent bg-transparent text-slate-300 hover:bg-slate-800/80',
-                )}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-
-          <div className="ml-auto flex items-center gap-2">
-            {notificationSupported && (
-              <button
-                type="button"
-                onClick={() =>
-                  notificationsEnabled
-                    ? setNotificationsEnabled(false)
-                    : enableNotifications()
-                }
-                className={clsx(
-                  'rounded-full px-3 py-1.5 text-xs border',
-                  notificationsEnabled
-                    ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-100'
-                    : 'border-slate-700 bg-slate-900/80 text-slate-100/90 hover:bg-slate-800',
-                )}
-              >
-                {notificationsEnabled ? 'Reminders on' : 'Enable reminders'}
-              </button>
-            )}
-
-            {/* Progress */}
-            <div className="inline-flex items-center gap-3 rounded-xl border border-slate-700 bg-slate-900/80 px-3 py-1.5 backdrop-blur">
-              <span className="text-xs text-slate-100/90">Progress</span>
-              <div className="h-2 w-36 rounded-full bg-slate-800 overflow-hidden">
-                <div
-                  className="h-full bg-slate-100"
-                  style={{ width: `${progressPct}%` }}
-                />
-              </div>
-              <span className="text-xs text-slate-300">
-                {completed}/{total}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Grid */}
-        <div className="mt-6 grid grid-cols-12 gap-6">
-          {/* Left: Today / Upcoming / Completed */}
-          <aside className="col-span-12 lg:col-span-4 space-y-4">
-            <TaskGroup
-              title="Today"
-              empty="No tasks for today."
-              items={groups.today}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              onToggleDone={toggleComplete}
-            />
-            <TaskGroup
-              title="Upcoming"
-              empty="Nothing scheduled."
-              items={groups.upcoming}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              onToggleDone={toggleComplete}
-              showDue
-            />
-            {showDone && (
-              <TaskGroup
-                title="Completed"
-                empty="Nothing completed yet."
-                items={groups.done}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onToggleDone={toggleComplete}
-                completed
-              />
-            )}
-          </aside>
-
-          {/* Center: Details */}
-          <section className="col-span-12 lg:col-span-5 rounded-2xl border border-slate-800 bg-slate-900/80 p-4 hover-card min-h-[280px]">
-            {selected ? (
-              <div className="space-y-4">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div className="space-y-1">
-                    <h2 className="text-base font-semibold text-slate-50">
-                      {selected.title}
-                    </h2>
-                    <p className="text-xs text-slate-300/90">
-                      Status: {selected.status} • Urgency: {selected.urgency ?? 'info'}{' '}
-                      {selected.dueAt ? `• Due ${formatDue(selected.dueAt)}` : ''}
-                    </p>
-                    {selected.rationale && (
-                      <p className="mt-1 text-sm text-slate-100/90">
-                        <span className="text-slate-400">Why: </span>
-                        {selected.rationale}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      onClick={() => toggleComplete(selected.id)}
-                      className={clsx(
-                        'rounded-lg px-3 py-1.5 text-sm border',
-                        selected.status === 'done'
-                          ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-100'
-                          : 'border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800',
-                      )}
-                    >
-                      {selected.status === 'done' ? 'Done' : 'Mark done'}
-                    </button>
-                    <button
-                      onClick={() => requestAICall(selected)}
-                      className="rounded-lg px-3 py-1.5 text-sm border border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800"
-                      title="Have No Trek call the clinic or provider"
-                    >
-                      Have No Trek call
-                    </button>
-                  </div>
-                </div>
-
-                {coachMsg && (
-                  <div className="rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-xs text-sky-100">
-                    {coachMsg}
-                  </div>
-                )}
-
-                {/* Evidence gate hint */}
-                {showEvidenceLock && allowedOnly(selected.citations).length === 0 && (
-                  <div className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                    This task doesn’t have citations from trusted medical domains yet. Add
-                    sources in your session, or toggle off “Evidence lock” to view all tasks.
-                  </div>
-                )}
-
-                {/* Steps */}
-                <section>
-                  <div className="mb-1 flex items-center justify-between">
-                    <h3 className="text-xs font-semibold text-slate-200">Steps</h3>
-                    <button
-                      type="button"
-                      onClick={() => autoDesignSteps(selected.id)}
-                      disabled={!!designingStepsId || !connected}
-                      className={clsx(
-                        'rounded-full pill px-3 py-1 text-[11px]',
-                        designingStepsId === selected.id || !connected
-                          ? 'opacity-60 cursor-default'
-                          : 'hover:bg-slate-800',
-                      )}
-                    >
-                      {designingStepsId === selected.id ? 'Designing…' : 'Ask AI for steps'}
-                    </button>
-                  </div>
-                  {selected.steps && selected.steps.length > 0 ? (
-                    <ul className="space-y-1">
-                      {selected.steps.map((s) => (
-                        <li
-                          key={s.id}
-                          className="flex items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/60 px-2 py-1.5"
-                        >
-                          <input
-                            type="checkbox"
-                            checked={!!s.done}
-                            onChange={() => toggleStep(selected.id, s.id)}
-                            className="h-4 w-4"
-                            aria-label={`Mark step: ${s.text}`}
-                          />
-                          <span
-                            className={clsx(
-                              'text-sm text-slate-100',
-                              s.done && 'line-through text-slate-400',
-                            )}
-                          >
-                            {s.text}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : (
-                    <p className="text-xs text-slate-300">
-                      No steps yet. You can add them yourself or let the AI suggest a
-                      checklist.
-                    </p>
-                  )}
-                  <div className="mt-2 flex gap-2">
-                    <input
-                      type="text"
-                      value={stepDraft}
-                      onChange={(e) => setStepDraft(e.target.value)}
-                      placeholder="Add a step…"
-                      className="flex-1 rounded-md bg-slate-950/60 border border-slate-800 px-2 py-1 text-xs text-slate-100 placeholder:text-slate-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={addManualStep}
-                      className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 text-xs text-slate-100 hover:bg-slate-800"
-                    >
-                      Add
-                    </button>
-                  </div>
-                </section>
-
-                {/* Citations */}
-                {allowedOnly(selected.citations).length > 0 && (
-                  <section>
-                    <h3 className="mb-1 text-xs font-semibold text-slate-200">
-                      Citations
-                    </h3>
-                    <div className="flex flex-wrap gap-2">
-                      {allowedOnly(selected.citations).map((c, i) => (
-                        <a
-                          key={c.id || i}
-                          href={c.url}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 rounded-md border border-slate-700 bg-slate-900 px-2 py-0.5 text-[11px] text-slate-100 hover:bg-slate-800"
-                          title={c.title}
-                        >
-                          <svg
-                            width="12"
-                            height="12"
-                            viewBox="0 0 24 24"
-                            aria-hidden
-                          >
-                            <path
-                              fill="currentColor"
-                              d="M14 3v2h3.59L7 15.59 8.41 17 19 6.41V10h2V3z"
-                            />
-                          </svg>
-                          {c.source || domainOf(c.url) || c.title}
-                        </a>
-                      ))}
-                    </div>
-                  </section>
-                )}
-
-                {/* Quick scheduling */}
-                <section>
-                  <h3 className="mb-1 text-xs font-semibold text-slate-200">Schedule</h3>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <input
-                      type="datetime-local"
-                      value={
-                        selected.dueAt
-                          ? new Date(selected.dueAt).toISOString().slice(0, 16)
-                          : ''
-                      }
-                      onChange={(e) =>
-                        setDue(
-                          selected.id,
-                          e.target.value
-                            ? new Date(e.target.value).toISOString()
-                            : undefined,
-                        )
-                      }
-                      className="rounded-md bg-slate-950/60 border border-slate-800 px-2 py-1 text-slate-100 text-xs"
-                      aria-label="Due date"
-                    />
-                    <button
-                      onClick={() => quickDue('today')}
-                      className="rounded-full pill px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-800"
-                    >
-                      Later today
-                    </button>
-                    <button
-                      onClick={() => quickDue('tmrwAM')}
-                      className="rounded-full pill px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-800"
-                    >
-                      Tomorrow 9am
-                    </button>
-                    <button
-                      onClick={() => quickDue('weekend')}
-                      className="rounded-full pill px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-800"
-                    >
-                      This weekend
-                    </button>
-                  </div>
-                </section>
-
-                {/* Place quick links (if present) */}
-                {(selected.phone || selected.url || selected.address) && (
-                  <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-3">
-                    <h3 className="text-xs text-slate-200">Location</h3>
-                    <p className="text-sm text-slate-50 mt-1">
-                      {selected.placeName || 'Care site'}
-                    </p>
-                    <div className="mt-1 flex flex-wrap gap-2 text-xs text-slate-100">
-                      {selected.phone && (
-                        <a
-                          className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 hover:bg-slate-800"
-                          href={`tel:${selected.phone}`}
-                        >
-                          Call
-                        </a>
-                      )}
-                      {selected.url && (
-                        <a
-                          className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 hover:bg-slate-800"
-                          href={selected.url}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Website
-                        </a>
-                      )}
-                      {selected.address && (
-                        <a
-                          className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1 hover:bg-slate-800"
-                          href={`https://maps.google.com/?q=${encodeURIComponent(
-                            selected.address,
-                          )}`}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Directions
-                        </a>
-                      )}
-                    </div>
-                  </section>
-                )}
-              </div>
-            ) : (
-              <div className="grid h-[60vh] place-items-center text-center text-slate-200 text-sm">
-                <div className="space-y-2 max-w-xs">
-                  <p>Select a task from the left to see details, steps, and citations.</p>
-                  <p className="text-xs text-slate-400">
-                    Tasks here are the “doing” half of your Intake plan.
-                  </p>
-                </div>
-              </div>
-            )}
-          </section>
-
-          {/* Right: New task + Plan context + Stella help */}
-          <aside className="col-span-12 lg:col-span-3 space-y-4">
-            {/* New task composer */}
-            <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 hover-card">
-              <h2 className="mb-2 text-sm font-semibold text-slate-100">New task</h2>
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault()
-                  createTaskFromDraft()
-                }}
-                className="space-y-2"
-              >
-                <input
-                  type="text"
-                  value={newTitle}
-                  onChange={(e) => setNewTitle(e.target.value)}
-                  placeholder="What do you need to do?"
-                  className="w-full rounded-md bg-slate-950/70 border border-slate-800 px-2 py-1.5 text-sm text-slate-100 placeholder:text-slate-500"
-                  required
-                />
-                <textarea
-                  value={newRationale}
-                  onChange={(e) => setNewRationale(e.target.value)}
-                  rows={2}
-                  placeholder="Optional: why this matters, symptoms, or context…"
-                  className="w-full rounded-md bg-slate-950/70 border border-slate-800 px-2 py-1.5 text-xs text-slate-100 placeholder:text-slate-500 resize-none"
-                />
-                <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="text-slate-300">Urgency:</span>
-                  <select
-                    value={newUrgency}
-                    onChange={(e) =>
-                      setNewUrgency(e.target.value as 'info' | 'elevated' | 'severe')
-                    }
-                    className="rounded-md bg-slate-950/70 border border-slate-800 px-2 py-1 text-xs text-slate-100"
-                  >
-                    <option value="info">Info / low</option>
-                    <option value="elevated">Elevated</option>
-                    <option value="severe">Severe</option>
-                  </select>
-                  <label className="ml-auto inline-flex items-center gap-1.5 text-xs text-slate-200">
-                    <input
-                      type="checkbox"
-                      checked={askAISteps}
-                      onChange={(e) => setAskAISteps(e.target.checked)}
-                      className="h-3.5 w-3.5 bg-transparent"
-                    />
-                    Ask AI for steps
-                  </label>
-                </div>
-                <button
-                  type="submit"
-                  disabled={!newTitle.trim() || creatingTask}
-                  className={clsx(
-                    'mt-1 w-full rounded-lg border px-3 py-1.5 text-sm',
-                    creatingTask
-                      ? 'border-slate-700 bg-slate-900 text-slate-300 opacity-70'
-                      : 'border-sky-500/80 bg-[var(--brand-blue)] text-white hover:bg-slate-900',
-                  )}
-                >
-                  {creatingTask ? 'Adding…' : 'Add task'}
-                </button>
-                <p className="mt-1 text-[10px] text-slate-400">
-                  Tasks live only in your browser unless you import a plan. AI steps use the
-                  same medical-safe engine as Intake (once configured).
-                </p>
-              </form>
-            </section>
-
-            <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 hover-card">
-              <h2 className="mb-2 text-sm font-semibold text-slate-100">
-                Solution steps
-              </h2>
-              {plan?.solutionSteps?.length ? (
-                <ol className="list-decimal space-y-1 pl-5 text-sm text-slate-100">
-                  {plan.solutionSteps.map((s, i) => (
-                    <li key={i}>{s}</li>
-                  ))}
-                </ol>
-              ) : (
-                <p className="text-sm text-slate-300">
-                  No high-level steps available yet. Ask AI for steps on a task to start
-                  building this.
-                </p>
-              )}
-            </section>
-
-            <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 hover-card">
-              <h2 className="mb-2 text-sm font-semibold text-slate-100">Plan</h2>
-              <p className="text-sm text-slate-100">{plan?.title ?? '—'}</p>
-              <p className="text-xs text-slate-300">
-                Created: {plan ? new Date(plan.createdAt).toLocaleString() : '—'}
-              </p>
-              {plan?.sourceSessionId && (
-                <p className="text-xs text-slate-300">
-                  From session: {plan.sourceSessionId}
-                </p>
-              )}
-              <div className="mt-2 text-xs text-slate-300">
-                Tasks: {total} • Completed: {completed} • Evidence-locked:{' '}
-                {showEvidenceLock ? 'On' : 'Off'}
-              </div>
-            </section>
-
-            {/* Stella helper / transition back to Intake */}
-            <section className="rounded-2xl border border-slate-800 bg-slate-900/90 p-4 hover-card">
-              <h2 className="mb-1 text-sm font-semibold text-slate-100">
-                Need to adjust the plan?
-              </h2>
-              <p className="text-xs text-slate-300 mb-2">
-                If your situation changed, you can re-open Intake with Stella and update
-                your care map. Tasks will follow.
-              </p>
-              <div className="flex flex-wrap gap-2 text-xs">
-                <Link
-                  href="/intake"
-                  className="rounded-full border border-sky-500/70 bg-slate-900 px-3 py-1.5 text-slate-100 hover:bg-slate-800"
-                >
-                  Back to Intake
-                </Link>
-                <Link
-                  href="/"
-                  className="rounded-full border border-slate-700 bg-slate-900 px-3 py-1.5 text-slate-100 hover:bg-slate-800"
-                >
-                  Home
-                </Link>
-              </div>
-            </section>
-
-            {callViz.status !== 'idle' && (
-              <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4">
-                <div className="flex items-center justify-between">
-                  <div className="text-sm text-slate-100 font-medium">
-                    {callViz.status === 'calling'
-                      ? 'Calling…'
-                      : callViz.status === 'ok'
-                      ? 'Connected'
-                      : 'Call failed'}
-                  </div>
-                  <button
-                    onClick={() => setCallViz({ status: 'idle', transcript: [] })}
-                    className="text-[11px] text-slate-300 hover:underline"
-                  >
-                    Hide
-                  </button>
-                </div>
-                <div className="mt-2 space-y-1 max-h-40 overflow-auto">
-                  {callViz.transcript.map((t, i) => (
-                    <div key={i} className="text-[11px] text-slate-200">
-                      {t}
-                    </div>
-                  ))}
-                </div>
-                {callViz.status === 'calling' && (
-                  <div className="mt-2 h-1.5 rounded-full bg-slate-800 overflow-hidden">
-                    <div className="h-full w-1/2 animate-pulse bg-slate-100" />
-                  </div>
-                )}
-              </section>
-            )}
-          </aside>
-        </div>
-      </div>
-
-      {/* Sources panel */}
-      {sourcesOpen && (
-        <div className="fixed inset-0 z-50">
-          <div
-            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
-            onClick={() => setSourcesOpen(false)}
-          />
-          <div className="absolute right-0 top-0 h-full w-full max-w-md bg-[#0E223B] shadow-2xl shadow-black/60">
-            <div className="flex items-center justify-between px-5 py-4 border-b border-white/15">
-              <div>
-                <h3 className="text-white font-semibold">Plan sources</h3>
-                <p className="text-[11px] text-white/65 mt-0.5">
-                  Trusted medical domains only.
-                </p>
-              </div>
-              <button
-                onClick={() => setSourcesOpen(false)}
-                className="rounded-full pill px-3 py-1.5 text-white/90 hover:bg-white/10 text-xs"
-              >
-                Close
-              </button>
-            </div>
-            <div className="p-5 space-y-3 overflow-y-auto h-[calc(100%-60px)]">
-              {sources.length === 0 ? (
-                <p className="text-white/75 text-sm">
-                  No sources yet. As tasks include citations, they’ll appear here.
-                </p>
-              ) : (
-                sources.map((s, i) => (
-                  <a
-                    key={s.id || i}
-                    href={s.url}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="block rounded-xl border-[2px] border-white/20 bg-white/[0.04] p-3 hover:bg-white/[0.08]"
-                  >
-                    <div className="text-white/90 text-sm font-medium">
-                      {s.title || s.url}
-                    </div>
-                    <div className="text-white/70 text-xs mt-0.5">{s.url}</div>
-                  </a>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Shared styles */}
+      <BreathingBackground risk={risk} />
       <style jsx global>{`
         :root {
           --brand-blue: ${BRAND_BLUE};
         }
         .pill {
-          border: 2px solid rgba(148, 163, 184, 0.6);
-          background: rgba(15, 23, 42, 0.9);
-          backdrop-filter: blur(10px);
           border-radius: 9999px;
         }
         .hover-card {
-          transition: transform 0.22s ease, box-shadow 0.22s ease,
-            border-color 0.22s ease;
+          transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
           will-change: transform;
         }
         .hover-card:hover {
-          transform: translateY(-4px);
-          box-shadow: 0 16px 36px rgba(15, 23, 42, 0.8),
-            0 1px 0 rgba(255, 255, 255, 0.06) inset;
-          border-color: rgba(148, 163, 184, 0.9) !important;
+          transform: translateY(-3px);
+          box-shadow: 0 16px 36px rgba(20, 60, 180, 0.36),
+            0 1px 0 rgba(255, 255, 255, 0.08) inset;
+          border-color: rgba(148, 163, 184, 0.6) !important;
+        }
+        @media (prefers-reduced-motion: no-preference) {
+          @keyframes softPulse {
+            0% {
+              opacity: 0.2;
+              transform: scale(1);
+            }
+            50% {
+              opacity: 0.32;
+              transform: scale(1.02);
+            }
+            100% {
+              opacity: 0.2;
+              transform: scale(1);
+            }
+          }
+          @keyframes sectionIn {
+            0% {
+              opacity: 0;
+              transform: translateY(4px);
+            }
+            100% {
+              opacity: 1;
+              transform: translateY(0);
+            }
+          }
         }
       `}</style>
+
+      <div className="relative z-10">
+        <NavBar />
+        <EmergencyBanner />
+
+        <div className="mx-auto max-w-7xl px-4 pb-10 pt-8 sm:px-6 lg:px-8">
+          {/* Header */}
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="max-w-xl space-y-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-200/80">
+                No Trek
+              </p>
+              <h1 className="text-2xl font-semibold tracking-tight text-slate-50 sm:text-3xl">
+                Care tasks & coaching
+              </h1>
+              <p className="text-sm text-slate-200/85">
+                This is the place where scattered advice turns into a small set of concrete
+                steps. Stella keeps you honest, but on your side.
+              </p>
+              <p className="text-[11px] text-slate-300/90">{episodeLabel}</p>
+            </div>
+
+            <div className="flex flex-col items-end gap-3">
+              <div
+                className={cx(
+                  'inline-flex items-center gap-2 rounded-full border-[2px] bg-slate-900/80 px-3 py-1.5 text-[11px]',
+                  riskColor(risk),
+                )}
+              >
+                <span className="h-1.5 w-1.5 rounded-full bg-current" />
+                <span>{riskBadgeLabel}</span>
+              </div>
+              <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-100">
+                <span
+                  className={cx(
+                    'h-2 w-2 rounded-full',
+                    engineConnected
+                      ? 'bg-emerald-400'
+                      : engineConnected === false
+                      ? 'bg-rose-400'
+                      : 'bg-slate-400',
+                  )}
+                />
+                <span>
+                  {engineConnected === null
+                    ? 'Checking coach'
+                    : engineConnected
+                    ? 'Connected to Stella'
+                    : 'Base engine'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Metrics & filters */}
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-200/90">
+              <span className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5">
+                {stats.total} total steps
+              </span>
+              <span className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5">
+                {openCount} active
+              </span>
+              <span className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5">
+                {stats.done} done
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-200/90">
+              {(['all', 'today', 'week', 'done'] as const).map(key => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setFilter(key)}
+                  className={cx(
+                    'rounded-full border px-3 py-1.5 font-semibold uppercase tracking-[0.15em]',
+                    filter === key
+                      ? 'border-sky-400/80 bg-sky-500/20 text-sky-100'
+                      : 'border-slate-600/80 bg-slate-900/80 text-slate-200 hover:bg-slate-800/90',
+                  )}
+                >
+                  {key === 'all'
+                    ? 'All'
+                    : key === 'today'
+                    ? 'Today'
+                    : key === 'week'
+                    ? 'This week'
+                    : 'Done'}
+                </button>
+              ))}
+              {stats.done > 0 && (
+                <button
+                  type="button"
+                  onClick={clearDoneTasks}
+                  className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 font-semibold uppercase tracking-[0.15em] text-slate-200 hover:bg-slate-800/90"
+                >
+                  Clear done
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Main layout */}
+          <div
+            className="mt-6 grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]"
+            style={{ alignItems: 'flex-start' }}
+          >
+            {/* Left: Task board */}
+            <section
+              className="hover-card relative w-full rounded-[22px] border-[2px] border-slate-700/80 bg-slate-900/80 p-4 shadow-[0_0_26px_rgba(15,23,42,0.9)] backdrop-blur"
+              aria-label="Care tasks"
+              style={{ animation: 'sectionIn 260ms ease-out both' }}
+            >
+              {/* Add task */}
+              <div className="rounded-2xl border-[2px] border-slate-700/80 bg-slate-950/80 p-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-300/90">
+                  Add a step
+                </p>
+                <p className="mt-0.5 text-[11px] text-slate-300/90">
+                  Drop something from your brain onto the board. It doesn&apos;t have to be
+                  perfect.
+                </p>
+                <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,2fr)_minmax(0,1.4fr)]">
+                  <div className="space-y-2">
+                    <input
+                      value={newTitle}
+                      onChange={e => setNewTitle(e.target.value)}
+                      placeholder="e.g., Call urgent care to check same-day availability"
+                      className="w-full rounded-xl border border-slate-600/80 bg-slate-900/80 px-3 py-2 text-sm text-slate-50 placeholder:text-slate-400 outline-none focus:border-slate-300"
+                    />
+                    <textarea
+                      value={newNotes}
+                      onChange={e => setNewNotes(e.target.value)}
+                      rows={2}
+                      placeholder="Optional notes, scripts, or what you’re worried about."
+                      className="w-full resize-none rounded-xl border border-slate-600/80 bg-slate-900/80 px-3 py-2 text-sm text-slate-50 placeholder:text-slate-400 outline-none focus:border-slate-300"
+                    />
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="text-[11px] text-slate-300/90">
+                      Due (optional)
+                      <input
+                        type="datetime-local"
+                        value={newDue}
+                        onChange={e => setNewDue(e.target.value)}
+                        className="mt-1 w-full rounded-xl border border-slate-600/80 bg-slate-900/80 px-3 py-2 text-sm text-slate-50 outline-none focus:border-slate-300"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleAddTask}
+                      className="mt-auto inline-flex items-center justify-center rounded-xl bg-sky-500 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-950 shadow-[0_0_24px_rgba(56,189,248,0.9)] transition-transform hover:-translate-y-0.5 hover:shadow-[0_0_36px_rgba(56,189,248,1)] disabled:cursor-not-allowed disabled:opacity-40"
+                      disabled={!newTitle.trim()}
+                    >
+                      Add to board
+                    </button>
+                    <p className="text-[10px] text-slate-400">
+                      Tasks themselves don&apos;t need citations — this is just your real life
+                      laid out. Stella adds evidence only when coaching.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Task list */}
+              <div className="mt-4 space-y-3">
+                {filteredTasks.length === 0 ? (
+                  <div className="rounded-2xl border-[2px] border-slate-700/80 bg-slate-950/80 p-4 text-sm text-slate-200/90">
+                    Nothing here yet. Add a step above, or send something from Intake and it
+                    will land here automatically.
+                  </div>
+                ) : (
+                  filteredTasks.map(t => (
+                    <TaskCard
+                      key={t.id}
+                      task={t}
+                      place={t.linkedPlaceId ? places.find(p => p.id === t.linkedPlaceId) || null : null}
+                      selected={selectedTaskId === t.id}
+                      onSelect={() => setSelectedTaskId(t.id)}
+                      onToggleStatus={() => toggleTaskStatus(t.id)}
+                      onAskStella={() => handleAskStellaWhy(t)}
+                    />
+                  ))
+                )}
+              </div>
+
+              <p className="mt-4 text-[11px] text-slate-400">
+                Tip: Smaller steps win. If something feels impossible, you can ask Stella in
+                the coach panel to break it down.
+              </p>
+            </section>
+
+            {/* Right: Coach panel */}
+            <section
+              className="hover-card relative w-full rounded-[22px] border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-950/95 p-4 shadow-[0_0_26px_rgba(15,23,42,0.9)] backdrop-blur"
+              aria-label="Stella task coach"
+              style={{ animation: 'sectionIn 260ms ease-out both' }}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-200/85">
+                    Stella coach
+                  </p>
+                  <h2 className="text-sm font-semibold text-slate-50">
+                    Why this step matters
+                  </h2>
+                  <p className="text-[11px] text-slate-300/90">
+                    Ask Stella about your tasks. She&apos;ll connect the dots and nudge you
+                    forward — without shaming you.
+                  </p>
+                  {selectedTask && (
+                    <p className="mt-1 text-[11px] text-sky-200/90">
+                      Focused on:{' '}
+                      <span className="font-semibold">&ldquo;{selectedTask.title}&rdquo;</span>
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Coach controls */}
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-200/90">
+                <label className="inline-flex items-center gap-1 rounded-full border border-slate-600/80 bg-slate-900/80 px-2.5 py-1">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 bg-transparent"
+                    checked={coachEvidenceLock}
+                    onChange={e => setCoachEvidenceLock(e.target.checked)}
+                  />
+                  Evidence lock
+                </label>
+                <label className="inline-flex items-center gap-1 rounded-full border border-slate-600/80 bg-slate-900/80 px-2.5 py-1">
+                  <input
+                    type="checkbox"
+                    className="h-3.5 w-3.5 bg-transparent"
+                    checked={coachPreferCitations}
+                    onChange={e => setCoachPreferCitations(e.target.checked)}
+                  />
+                  Prefer citations (warn if missing)
+                </label>
+              </div>
+
+              {coachGateMsg && (
+                <div className="mt-2 rounded-xl border-[2px] border-amber-400/40 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100">
+                  {coachGateMsg}
+                </div>
+              )}
+
+              {/* Coach thread */}
+              <div className="mt-3 flex h-[48vh] flex-col rounded-2xl border-[2px] border-slate-700/80 bg-slate-950/80 p-3">
+                <div className="flex-1 space-y-3 overflow-y-auto pr-1">
+                  {coachMessages.length === 0 ? (
+                    <div className="text-[11px] text-slate-300/90">
+                      You can start with:
+                      <ul className="mt-1 list-disc pl-4">
+                        <li>“Why is this step worth doing today?”</li>
+                        <li>“I&apos;m overwhelmed — what&apos;s the smallest next move?”</li>
+                        <li>“Can you help me script what to say when I call?”</li>
+                      </ul>
+                    </div>
+                  ) : (
+                    coachMessages.map(m => (
+                      <CoachBubble key={m.id} msg={m} />
+                    ))
+                  )}
+                  {coachSending && (
+                    <div className="flex items-center gap-1 text-[11px] text-slate-200">
+                      <span className="relative flex h-2.5 w-2.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-slate-100/60 opacity-75" />
+                        <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-slate-100" />
+                      </span>
+                      <span>Stella is thinking…</span>
+                    </div>
+                  )}
+                </div>
+
+                {/* Composer */}
+                <form
+                  className="mt-2 flex items-end gap-2"
+                  onSubmit={e => {
+                    e.preventDefault()
+                    sendCoach()
+                  }}
+                >
+                  <textarea
+                    value={coachDraft}
+                    onChange={e => setCoachDraft(e.target.value)}
+                    rows={2}
+                    placeholder={
+                      selectedTask
+                        ? `Ask Stella about this step or how to make it doable…`
+                        : 'Ask Stella about your tasks, priorities, or where to start…'
+                    }
+                    className="h-[60px] min-h-[54px] flex-1 resize-none rounded-xl border border-slate-600/80 bg-slate-900/80 px-3 py-2 text-sm text-slate-50 placeholder:text-slate-400 outline-none focus:border-slate-300"
+                  />
+                  <button
+                    type="submit"
+                    disabled={coachSending || !coachDraft.trim()}
+                    className="inline-flex h-[60px] items-center justify-center rounded-xl bg-sky-500 px-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-950 shadow-[0_0_24px_rgba(56,189,248,0.9)] transition-transform hover:-translate-y-0.5 hover:shadow-[0_0_36px_rgba(56,189,248,1)] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Ask Stella
+                  </button>
+                </form>
+                <div className="mt-1 text-[10px] text-slate-400">
+                  Stella&apos;s answers here are coaching and education only, not a diagnosis or
+                  a replacement for your clinician.
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <p className="mt-4 text-[11px] text-slate-400">
+            No Trek is not a medical provider. This is educational support, not a diagnosis. If
+            you have life-threatening symptoms, call your local emergency number.
+          </p>
+        </div>
+      </div>
     </main>
   )
 }
 
-/* ============================== Bits ============================== */
-function TaskGroup({
-  title,
-  empty,
-  items,
-  selectedId,
+/* ============================== Task Card ============================== */
+
+function TaskCard({
+  task,
+  place,
+  selected,
   onSelect,
-  onToggleDone,
-  showDue = false,
-  completed = false,
+  onToggleStatus,
+  onAskStella,
 }: {
-  title: string
-  empty: string
-  items: Task[]
-  selectedId: string | null
-  onSelect: (id: string) => void
-  onToggleDone: (id: string) => void
-  showDue?: boolean
-  completed?: boolean
+  task: CareTask
+  place: PlaceSummary | null
+  selected: boolean
+  onSelect: () => void
+  onToggleStatus: () => void
+  onAskStella: () => void
 }) {
+  const dueLabel = useMemo(() => {
+    if (!task.dueAt) return 'Whenever you can'
+    const d = new Date(task.dueAt)
+    if (Number.isNaN(d.getTime())) return 'When you can'
+    return d.toLocaleString()
+  }, [task.dueAt])
+
   return (
-    <section className="rounded-2xl border border-slate-800 bg-slate-900/80 p-4 hover-card">
-      <div className="mb-2 flex items-center justify-between">
-        <h2 className="text-sm font-semibold text-slate-100">{title}</h2>
-        {items.length > 0 && (
-          <span className="text-[11px] text-slate-300">{items.length}</span>
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={onSelect}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onSelect()
+        }
+      }}
+      className={cx('group w-full text-left', selected && 'scale-[1.01]')}
+    >
+      <div
+        className={cx(
+          'hover-card relative w-full rounded-xl border-[2px] border-slate-700/80 bg-slate-900/90 p-3 text-slate-50 transition-transform',
+          selected && 'border-sky-400/80 shadow-[0_0_26px_rgba(56,189,248,0.7)]',
         )}
-      </div>
-      {items.length === 0 && <p className="text-sm text-slate-300">{empty}</p>}
-      <ul className="space-y-2">
-        {items.map((t) => (
-          <li
-            key={t.id}
-            className={clsx(
-              'group flex items-center justify-between rounded-xl border border-slate-800 bg-slate-950/60 px-3 py-2 hover:border-slate-500',
-              selectedId === t.id && 'ring-1 ring-slate-200/40 bg-slate-950',
-            )}
-          >
-            <button
-              onClick={() => onSelect(t.id)}
-              className="flex flex-1 items-center gap-3 text-left"
+      >
+        <div className="flex items-start gap-2">
+          <input
+            type="checkbox"
+            checked={task.status === 'done'}
+            onChange={e => {
+              e.stopPropagation()
+              onToggleStatus()
+            }}
+            className="mt-1 h-4 w-4 cursor-pointer rounded border-slate-500/80 bg-slate-900/80"
+          />
+          <div className="min-w-0 flex-1">
+            <p
+              className={cx(
+                'truncate text-sm font-semibold',
+                task.status === 'done' ? 'text-slate-400 line-through' : 'text-slate-50',
+              )}
             >
-              <span
-                className={clsx(
-                  'h-2.5 w-2.5 rounded-full',
-                  completed
-                    ? 'bg-emerald-300'
-                    : t.urgency === 'severe'
-                    ? 'bg-red-400'
-                    : t.urgency === 'elevated'
-                    ? 'bg-amber-300'
-                    : 'bg-emerald-300',
+              {task.title}
+            </p>
+            {task.notes && (
+              <p
+                className={cx(
+                  'mt-0.5 line-clamp-2 text-xs',
+                  task.status === 'done' ? 'text-slate-500' : 'text-slate-200/90',
                 )}
-                aria-hidden
-              />
-              <div className="flex-1">
-                <span
-                  className={clsx(
-                    'block text-sm text-slate-100 truncate',
-                    completed && 'line-through text-slate-400',
-                  )}
-                >
-                  {t.title}
+              >
+                {task.notes}
+              </p>
+            )}
+            <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] text-slate-300/90">
+              <span className="rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5">
+                {task.status === 'done'
+                  ? 'Done'
+                  : task.status === 'doing'
+                  ? 'In progress'
+                  : 'Not started'}
+              </span>
+              <span className="rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5">
+                {dueLabel}
+              </span>
+              {place && (
+                <span className="rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5">
+                  {place.name}
+                  {typeof place.distance_km === 'number'
+                    ? ` · ${place.distance_km.toFixed(1)} km`
+                    : ''}
+                  {typeof place.est_cost_min === 'number' &&
+                    typeof place.est_cost_max === 'number' &&
+                    ` · est. $${Math.round(place.est_cost_min)}–${Math.round(
+                      place.est_cost_max,
+                    )}`}
                 </span>
-                {showDue && t.dueAt && (
-                  <span className="mt-0.5 block text-[11px] text-slate-400">
-                    {new Date(t.dueAt).toLocaleDateString()}
-                  </span>
-                )}
-              </div>
-            </button>
-            <div className="flex items-center gap-2">
-              {!completed && (
-                <button
-                  onClick={() => onToggleDone(t.id)}
-                  className={clsx(
-                    'rounded-md px-2 py-1 text-xs border',
-                    t.status === 'done'
-                      ? 'border-emerald-400/60 bg-emerald-500/15 text-emerald-100'
-                      : 'border-slate-700 bg-slate-900 text-slate-100 hover:bg-slate-800',
-                  )}
-                >
-                  {t.status === 'done' ? 'Done' : 'Mark done'}
-                </button>
+              )}
+              {place?.in_network !== undefined && (
+                <span className="rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5">
+                  {place.in_network ? 'Likely in-network' : 'Check coverage'}
+                </span>
+              )}
+              {task.fromIntake && (
+                <span className="rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5">
+                  From intake
+                </span>
               )}
             </div>
-          </li>
-        ))}
-      </ul>
-    </section>
+          </div>
+        </div>
+        <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+          <button
+            type="button"
+            onClick={e => {
+              e.stopPropagation()
+              onAskStella()
+            }}
+            className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-2.5 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
+          >
+            Ask Stella why this matters
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ============================== Coach Bubble ============================== */
+
+function CoachBubble({ msg }: { msg: CoachMessage }) {
+  const isUser = msg.role === 'user'
+  const needsSources =
+    !isUser && isDeclarative(msg.text) && (!msg.citations || msg.citations.length === 0)
+
+  return (
+    <div className={cx('flex', isUser ? 'justify-end' : 'justify-start')}>
+      <div
+        className={cx(
+          'hover-card relative max-w-[88%] rounded-3xl border-[2px] px-3 py-2 shadow-sm sm:max-w-[82%]',
+          isUser
+            ? 'border-transparent bg-[var(--brand-blue)] text-slate-50'
+            : 'border-slate-600/80 bg-slate-900/90 text-slate-50 backdrop-blur',
+        )}
+        style={{ animation: 'sectionIn 200ms ease-out both' }}
+      >
+        <p className="whitespace-pre-wrap break-words text-[13px] leading-6">
+          {msg.text}
+        </p>
+        {!isUser && (
+          <>
+            {msg.citations && msg.citations.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {msg.citations.map((c, i) => (
+                  <CitationChip key={i} c={c} />
+                ))}
+              </div>
+            ) : needsSources ? (
+              <div className="mt-1 text-[10px] text-slate-300/90">
+                If this gets more detailed or prescriptive, Stella will attach citations.
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function CitationChip({ c }: { c: TaskCitation }) {
+  const d = domainOf(c.url)
+  return (
+    <a
+      href={c.url}
+      target="_blank"
+      rel="noreferrer"
+      className="inline-flex items-center gap-1 rounded-md border-[2px] border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-100 hover:bg-slate-800/90"
+      title={c.title}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden>
+        <path
+          fill="currentColor"
+          d="M14 3v2h3.59L7 15.59 8.41 17 19 6.41V10h2V3z"
+        />
+      </svg>
+      {c.source || d || c.title}
+    </a>
   )
 }

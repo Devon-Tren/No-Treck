@@ -2,6 +2,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { ProtectedRoute } from '@/components/protectedRoute'
 import { supabase } from '@/lib/supabaseClient'
@@ -102,6 +103,10 @@ type Task = {
 // Match brand blue
 const BRAND_BLUE = '#0E5BD8'
 
+// Stella’s default greeting (used for first message + reset)
+const STELLA_GREETING =
+  'Hi — I’m Stella, the guide that lives inside No Trek. Start wherever your brain is actually stuck: a weird symptom, a bill you don’t understand, or something for a family member. Tell me what’s going on in your words, and I’ll help you turn it into a plan.'
+
 const ALLOWED_DOMAINS = [
   'nih.gov',
   'medlineplus.gov',
@@ -184,6 +189,13 @@ High-level personality
 - You avoid “forms” and checklists; questions are woven into natural sentences.
 - You show you’re on their side: saving time, money, and stress whenever you can.
 - Be concise, warm, and safety-first. Avoid long monologues unless clearly requested.
+
+Length of reply:
+- Do not reply in paragraphs reply in texts and if needed expand more but do not ramble on.
+- Do not go over 2-3 sentences per reply unless abosulutely neccessary, aim for 2 sentences.
+- Ask a question at the end if needed to give further clarity.
+- Be intuitive and look for user engagement.
+
 
 1. Core mission & boundaries
 Mission
@@ -794,8 +806,7 @@ export default function IntakePage() {
     {
       id: uid(),
       role: 'assistant',
-      text:
-        'Hi — I’m Stella, No Trek’s medical AI concierge. Start wherever you are — a new symptom, a long-term worry, or “is this worth a visit?”. I’ll listen first, then bring in medical detail, citations, and nearby options.',
+      text: STELLA_GREETING,
     },
   ])
   const [draft, setDraft] = useState('')
@@ -1092,7 +1103,9 @@ export default function IntakePage() {
 
     const composite =
       0.55 * ratingScore + 0.15 * volumeScore + 0.2 * distanceScore + 0.1 * costScore
-    const overall = Number((composite * 5).toFixed(2))
+
+    // Scale NT score into a clearer 3.0–5.0 band for recommended options
+    const overall = Number((3 + composite * 2).toFixed(2))
 
     const score = {
       overall,
@@ -1579,8 +1592,7 @@ export default function IntakePage() {
       {
         id: uid(),
         role: 'assistant',
-        text:
-          'Hi — I’m Stella, No Trek’s medical AI concierge. Start wherever you are — a new symptom, a long-term worry, or “is this worth a visit?”. I’ll listen first, then bring in medical detail, citations, and nearby options.',
+        text: STELLA_GREETING,
       },
     ])
     setRisk('low')
@@ -1607,7 +1619,7 @@ export default function IntakePage() {
     insights.length > 0 ||
     places.length > 0
   const readyInsightCount = (evidenceLock ? insights.filter(i => (i.citations || []).length > 0) : insights).length
-  const showRightRail = engaged
+  const showRightRail = true // always show Stella’s plan space on the right
   const cardsActive = readyInsightCount > 0 || rankedPlaces.length > 0
 
   const openTasks = tasks.filter(t => !t.done).length
@@ -1638,6 +1650,38 @@ export default function IntakePage() {
     })
   }, [engaged, readyInsightCount, rankedPlaces.length, tasks])
 
+  // Starter chips: fill the input instead of sending
+  const starterChips = [
+    {
+      label: 'New or ongoing symptom',
+      text:
+        "I’m worried about a symptom and not sure how urgent it is or where I should go.",
+    },
+    {
+      label: 'Bills & money stress',
+      text:
+        "I’m overwhelmed by a medical bill and not sure what’s correct or what my options are.",
+    },
+    {
+      label: 'Forms, portals, or paperwork',
+      text:
+        "I’m stuck on healthcare forms or portals and need help understanding and organizing what to do.",
+    },
+    {
+      label: 'For a family member',
+      text:
+        "I’m trying to help a family member with their health and feel lost about where to start.",
+    },
+  ]
+
+  const handleChipClick = (text: string) => {
+    setDraft(text)
+    // small delay so the textarea exists before focusing
+    setTimeout(() => {
+      textRef.current?.focus()
+    }, 0)
+  }
+
   return (
     <ProtectedRoute>
     <main
@@ -1654,467 +1698,481 @@ export default function IntakePage() {
       <BreathingBackground risk={risk} />
       {showSplash && <SplashIntro onDone={() => setShowSplash(false)} />}
 
-      <div className="relative z-10 mx-auto max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
-        {/* Top bar */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <div className="grid h-9 w-9 place-items-center rounded-full bg-white shadow-sm">
-              <span className="text-xs font-extrabold tracking-tight text-[#0E5BD8]">NT</span>
-            </div>
-            <div>
-              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-200/80">
-                No Trek
+      <div className="relative z-10">
+        <NavBar />
+        <EmergencyBanner />
+
+        <div className="mx-auto max-w-7xl px-4 pb-10 pt-8 sm:px-6 lg:px-8">
+          {/* Stella hero row */}
+          <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+            <div className="max-w-xl">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-sky-300/80">
+                Start with Stella
               </p>
-              <h1 className="text-xl font-semibold tracking-tight text-slate-50 sm:text-2xl">
-                Intake with Stella
+              <h1 className="mt-1 text-2xl font-semibold tracking-tight text-slate-50 sm:text-3xl">
+                Tell Stella what’s actually on your mind.
               </h1>
-              <p className="text-xs text-slate-200/80 sm:text-[13px]">
-                Talk to Stella like you&apos;re texting a nurse friend with a supercomputer
-                behind her. No forms or prerequisites — we listen first, then bring in
-                medical detail, risk, and nearby options.
+              <p className="mt-2 text-sm text-slate-200/85">
+                Bring anything: new symptoms, long-term worries, confusing bills, forms and
+                portals, or something for a family member. Stella listens first, then turns
+                it into a simple plan with you.
               </p>
             </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-500/60 bg-slate-900/80 px-3 py-1 text-xs text-slate-100 backdrop-blur">
-              <span
-                className={cx(
-                  'h-2 w-2 rounded-full',
-                  connected
-                    ? 'bg-emerald-400'
-                    : connected === false
-                    ? 'bg-rose-400'
-                    : 'bg-slate-400',
-                )}
-              />
-              <span>
-                {connected === null ? 'Checking' : connected ? 'Connected to Stella' : 'Base engine'}
-              </span>
-            </div>
-            {debug && (
-              <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-500/60 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-100">
-                debug: places {places.length} → reviewed {reviewedPlaces.length} → ranked{' '}
-                {rankedPlaces.length}
+            <div className="flex flex-col items-start gap-2 sm:items-end">
+              <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-500/60 bg-slate-900/80 px-3 py-1 text-xs text-slate-100 backdrop-blur">
+                <span
+                  className={cx(
+                    'h-2 w-2 rounded-full',
+                    connected
+                      ? 'bg-emerald-400'
+                      : connected === false
+                      ? 'bg-rose-400'
+                      : 'bg-slate-400',
+                  )}
+                />
+                <span>
+                  {connected === null
+                    ? 'Checking Stella'
+                    : connected
+                    ? 'Stella is online'
+                    : 'Using backup engine'}
+                </span>
               </div>
-            )}
+              <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 backdrop-blur">
+                <span className="hidden sm:inline">Optional: your ZIP for nearby options</span>
+                <span className="inline sm:hidden">ZIP for nearby options</span>
+                <input
+                  value={zip}
+                  onChange={e => setZip(e.target.value.replace(/[^\d-]/g, '').slice(0, 10))}
+                  placeholder="e.g., 10001"
+                  className="w-24 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-400"
+                  inputMode="numeric"
+                  aria-label="ZIP code for nearby results"
+                />
+              </div>
+            </div>
           </div>
-        </div>
 
-        {/* Controls row */}
-        <div className="mt-5 flex flex-wrap items-center gap-3">
-          <div className="pill inline-flex flex-wrap items-center gap-2 rounded-full border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 backdrop-blur">
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={evidenceLock}
-                onChange={e => setEvidenceLock(e.target.checked)}
-                className="h-3.5 w-3.5 bg-transparent"
-              />
-              Evidence lock
-            </label>
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="checkbox"
-                checked={hardEvidence}
-                onChange={e => setHardEvidence(e.target.checked)}
-                className="h-3.5 w-3.5 bg-transparent"
-              />
-              Prefer citations (warn if missing)
-            </label>
-            <label
-              className="inline-flex items-center gap-2"
-              title="Show places even if reviews are missing"
-            >
-              <input
-                type="checkbox"
-                checked={showUnverified}
-                onChange={e => setShowUnverified(e.target.checked)}
-                className="h-3.5 w-3.5 bg-transparent"
-              />
-              Show unverified options
-            </label>
-            <button
-              onClick={() => setShowSources(true)}
-              className="rounded-full px-3 py-1 hover:bg-slate-800/80"
-            >
-              Sources ({sessionSources.length})
-            </button>
-            <button
-              onClick={exportTxt}
-              className="rounded-full px-3 py-1 hover:bg-slate-800/80"
-            >
-              Export .txt
-            </button>
-            <button
-              onClick={exportForTasks}
-              disabled={tasks.length === 0}
-              className="rounded-full px-3 py-1 disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-800/80"
-            >
-              Send to Tasks
-            </button>
-            <button
-              onClick={() => setShowTasks(true)}
-              className="rounded-full px-3 py-1 hover:bg-slate-800/80"
-            >
-              Follow-ups ({openTasks})
-            </button>
-            <button
-              onClick={resetSession}
-              className="rounded-full px-3 py-1 hover:bg-slate-800/80"
-            >
-              Reset
-            </button>
-            <button
-              onClick={deleteData}
-              className="rounded-full px-3 py-1 hover:bg-slate-800/80"
-              title="Delete local session data & images"
-            >
-              Delete my data
-            </button>
-          </div>
-        </div>
-
-        {/* ZIP chip */}
-        <div className="mt-4">
-          <div className="inline-flex items-center gap-2 rounded-full border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 backdrop-blur">
-            <span>ZIP (for nearby results):</span>
-            <input
-              value={zip}
-              onChange={e => setZip(e.target.value.replace(/[^\d-]/g, '').slice(0, 10))}
-              placeholder="e.g., 10001"
-              className="w-24 bg-transparent text-sm text-slate-100 outline-none placeholder:text-slate-400"
-              inputMode="numeric"
-              aria-label="ZIP code for nearby results"
-            />
-          </div>
-        </div>
-
-        {/* Layout */}
-        <div
-          className={cx('mt-6 grid gap-6', showRightRail ? '' : 'flex justify-center')}
-          style={
-            showRightRail
-              ? ({ gridTemplateColumns: 'minmax(760px,1.45fr) 400px' } as CSSProperties)
-              : ({} as CSSProperties)
-          }
-        >
-          {/* Chat */}
-          <section
-            className={cx(
-              'relative w-full overflow-hidden rounded-[22px] border-[2px] border-slate-700/70 bg-slate-900/80 p-4 shadow-[0_0_26px_rgba(15,23,42,0.9)] backdrop-blur',
-              showRightRail ? '' : 'max-w-5xl',
-            )}
-            aria-label="No Trek chat"
+          {/* Layout */}
+          <div
+            className={cx('mt-6 grid gap-6')}
+            style={
+              showRightRail
+                ? ({ gridTemplateColumns: 'minmax(760px,1.45fr) 400px' } as CSSProperties)
+                : ({} as CSSProperties)
+            }
           >
-            <div className="flex items-center justify-between px-1">
-              {engaged && <RiskBadge risk={risk} />}
-              <span className="text-[11px] text-slate-300/90">
-                Educational support — not a diagnosis
-              </span>
-            </div>
-
-            {/* Living Care Map */}
-            <div className="mt-3">
-              <LivingCareMap
-                risk={risk}
-                hasAssess={hasAssess}
-                hasSite={hasSite}
-                hasPrice={hasPrice}
-                bookingState={bookingState}
-                stage={stage}
-                openTasks={openTasks}
-                totalTasks={tasks.length}
-              />
-            </div>
-
-            {risk === 'severe' && (
-              <div className="mt-3 rounded-xl border-[2px] border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
-                Severe symptoms may require urgent evaluation. If you have life-threatening
-                symptoms, call your local emergency number now.
-              </div>
-            )}
-
-            <div
-              ref={chatRef}
+            {/* Chat */}
+            <section
               className={cx(
-                engaged ? 'h-[62vh]' : 'h-[72vh] sm:h-[74vh]',
-                'mt-3 space-y-3 overflow-y-auto pr-1',
+                'relative w-full overflow-hidden rounded-[22px] border-[2px] border-slate-700/70 bg-slate-900/80 p-4 shadow-[0_0_26px_rgba(15,23,42,0.9)] backdrop-blur',
               )}
+              aria-label="No Trek chat"
             >
-              {messages.map(m => (
-                <div key={m.id} className="group">
-                  <ChatBubble msg={m} />
-                  {m.refImages?.length ? <RefImageStrip images={m.refImages} /> : null}
+              {/* Stella persona header */}
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="grid h-9 w-9 place-items-center rounded-full bg-gradient-to-br from-sky-500 via-emerald-400 to-sky-600 text-[11px] font-black tracking-tight text-slate-950 shadow-[0_0_24px_rgba(56,189,248,0.85)]">
+                    ST
+                  </div>
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-200/80">
+                      Stella · No Trek guide
+                    </p>
+                    <p className="mt-1 text-sm text-slate-100">
+                      I live here inside No Trek. Start wherever your brain is actually stuck —
+                      symptoms, bills, forms, or caring for someone else — and we’ll turn it into
+                      a plan together.
+                    </p>
+                  </div>
                 </div>
-              ))}
-              {sending && <TypingDots />}
-              <div ref={endRef} />
-              {showScrollBtn && (
-                <button
-                  onClick={scrollToBottom}
-                  className="pill absolute bottom-3 right-3 rounded-full bg-slate-900/90 px-3 py-1.5 text-xs text-slate-100 shadow hover:bg-slate-800"
-                  title="Jump to latest"
-                >
-                  Jump to latest ⤵
-                </button>
-              )}
-            </div>
-
-            <GateBanner msg={gateMsg} onClose={() => setGateMsg(null)} />
-
-            {/* Composer */}
-            <div className="mt-3 border-t border-slate-700/80 pt-3">
-              <form
-                onSubmit={e => {
-                  e.preventDefault()
-                  handleSend()
-                }}
-                className="flex items-end gap-2"
-                aria-label="Chat composer"
-              >
-                {/* (+) picker */}
-                <label className="relative inline-flex h-12">
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    className="absolute inset-0 cursor-pointer opacity-0"
-                    onChange={e => onPickImage(e.target.files?.[0] || null)}
-                    aria-label="Upload image"
-                  />
-                  <span className="inline-flex h-12 items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 text-sm text-slate-100 hover:bg-slate-800/90">
-                    <svg
-                      width="18"
-                      height="18"
-                      viewBox="0 0 24 24"
-                      aria-hidden
-                      className="opacity-90"
-                    >
-                      <path
-                        fill="currentColor"
-                        d="M12 2a10 10 0 1 0 .001 20.001A10 10 0 0 0 12 2Zm1 5v4h4v2h-4v4h-2v-4H7V11h4V7h2Z"
-                      />
-                    </svg>
-                    {imageFile ? (
-                      <span className="max-w-[12rem] truncate">{imageFile.name}</span>
-                    ) : (
-                      'Add'
-                    )}
+                <div className="flex flex-col items-end gap-1">
+                  {engaged && <RiskBadge risk={risk} />}
+                  <span className="text-[11px] text-slate-300/90">
+                    Educational support — not a diagnosis
                   </span>
-                </label>
+                </div>
+              </div>
+
+              {/* Living Care Map */}
+              <div className="mt-3">
+                <LivingCareMap
+                  risk={risk}
+                  hasAssess={hasAssess}
+                  hasSite={hasSite}
+                  hasPrice={hasPrice}
+                  bookingState={bookingState}
+                  stage={stage}
+                  openTasks={openTasks}
+                  totalTasks={tasks.length}
+                />
+              </div>
+
+              {risk === 'severe' && (
+                <div className="mt-3 rounded-xl border-[2px] border-red-400/40 bg-red-500/10 px-3 py-2 text-sm text-red-100">
+                  Some symptoms may be in an emergency range. If you have life-threatening
+                  symptoms, call your local emergency number now.
+                </div>
+              )}
+
+              <div
+                ref={chatRef}
+                className={cx(
+                  engaged ? 'h-[62vh]' : 'h-[72vh] sm:h-[74vh]',
+                  'mt-3 space-y-3 overflow-y-auto pr-1',
+                )}
+              >
+                {messages.map(m => (
+                  <div key={m.id} className="group">
+                    <ChatBubble msg={m} />
+                    {m.refImages?.length ? <RefImageStrip images={m.refImages} /> : null}
+                  </div>
+                ))}
+                {sending && <TypingDots />}
+                <div ref={endRef} />
+                {showScrollBtn && (
+                  <button
+                    onClick={scrollToBottom}
+                    className="pill absolute bottom-3 right-3 rounded-full bg-slate-900/90 px-3 py-1.5 text-xs font-semibold text-slate-100 shadow hover:bg-slate-800"
+                    title="Jump to latest"
+                  >
+                    Jump to latest ⤵
+                  </button>
+                )}
+              </div>
+
+              <GateBanner msg={gateMsg} onClose={() => setGateMsg(null)} />
+
+              {/* Composer */}
+              <div className="mt-3 border-t border-slate-700/80 pt-3">
+                <form
+                  onSubmit={e => {
+                    e.preventDefault()
+                    handleSend()
+                  }}
+                  className="flex items-end gap-2"
+                  aria-label="Chat composer"
+                >
+                  {/* (+) picker */}
+                  <label className="relative inline-flex h-12">
+                    <input
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      className="absolute inset-0 cursor-pointer opacity-0"
+                      onChange={e => onPickImage(e.target.files?.[0] || null)}
+                      aria-label="Upload image"
+                    />
+                    <span className="inline-flex h-12 items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 text-sm font-semibold text-slate-100 hover:bg-slate-800/90">
+                      <svg
+                        width="18"
+                        height="18"
+                        viewBox="0 0 24 24"
+                        aria-hidden
+                        className="opacity-90"
+                      >
+                        <path
+                          fill="currentColor"
+                          d="M12 2a10 10 0 1 0 .001 20.001A10 10 0 0 0 12 2Zm1 5v4h4v2h-4v4h-2v-4H7V11h4V7h2Z"
+                        />
+                      </svg>
+                      {imageFile ? (
+                        <span className="max-w-[12rem] truncate">{imageFile.name}</span>
+                      ) : (
+                        'Add'
+                      )}
+                    </span>
+                  </label>
+
+                  {imagePreview && (
+                    <div className="h-12 w-16 overflow-hidden rounded-lg border-[2px] border-slate-600/80 bg-black/20">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={imagePreview}
+                        alt="preview"
+                        className="h-full w-full object-cover"
+                      />
+                    </div>
+                  )}
+
+                  <div className="relative flex-1">
+                    <textarea
+                      ref={textRef}
+                      value={draft}
+                      onChange={e => setDraft(e.target.value)}
+                      placeholder="You can tell me about symptoms, bills, forms, or someone you’re helping…"
+                      rows={1}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault()
+                          handleSend()
+                        }
+                      }}
+                      className="h-12 min-h-[46px] w-full resize-none rounded-3xl border border-slate-600/80 bg-slate-900/80 px-4 py-3 pr-16 text-[15px] leading-6 text-slate-50 placeholder:text-slate-400 outline-none focus:border-slate-300"
+                    />
+                    {/* Vertically-centered send button */}
+                    <button
+                      type="submit"
+                      aria-label="Send message"
+                      disabled={sending || (!draft.trim() && !(imageFile && imageConsent))}
+                      className={cx(
+                        'absolute right-1.5 top-6 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full shadow-[0_0_40px_rgba(56,189,248,0.4)] transition-transform hover:scale-[1.03]',
+                        sending ? 'cursor-default opacity-60' : 'cursor-pointer',
+                      )}
+                      style={{
+                        backgroundImage:
+                          'linear-gradient(135deg, rgba(56,189,248,1), rgba(59,130,246,1))',
+                      }}
+                    >
+                      <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-950">
+                        Send
+                      </span>
+                    </button>
+                  </div>
+                </form>
 
                 {imagePreview && (
-                  <div className="h-12 w-16 overflow-hidden rounded-lg border-[2px] border-slate-600/80 bg-black/20">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={imagePreview}
-                      alt="preview"
-                      className="h-full w-full object-cover"
+                  <label className="mt-2 flex items-center gap-2 text-xs text-slate-200/90">
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 rounded border-slate-600/80 bg-transparent"
+                      checked={imageConsent}
+                      onChange={e => setImageConsent(e.target.checked)}
                     />
-                  </div>
+                    Use this image for this session only.
+                  </label>
                 )}
 
-                <div className="relative flex-1">
-                  <textarea
-                    ref={textRef}
-                    value={draft}
-                    onChange={e => setDraft(e.target.value)}
-                    placeholder="Tell Stella what you’re worried about, in your own words… or just ask “is this worth a visit?”"
-                    rows={1}
-                    onKeyDown={e => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        handleSend()
-                      }
-                    }}
-                    className="h-12 min-h-[46px] w-full resize-none rounded-3xl border border-slate-600/80 bg-slate-900/80 px-4 py-3 pr-16 text-[15px] leading-6 text-slate-50 placeholder:text-slate-400 outline-none focus:border-slate-300"
-                  />
-                  {/* Vertically-centered send button, no font download needed */}
-                  <button
-                    type="submit"
-                    aria-label="Send message"
-                    disabled={sending || (!draft.trim() && !(imageFile && imageConsent))}
-                    className={cx(
-                      'absolute right-1.5 top-6 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full shadow-[0_0_40px_rgba(56,189,248,0.4)] transition-transform hover:scale-[1.03]',
-                      sending ? 'cursor-default opacity-60' : 'cursor-pointer',
-                    )}
-                    style={{
-                      backgroundImage:
-                        'linear-gradient(135deg, rgba(56,189,248,1), rgba(59,130,246,1))',
-                    }}
-                  >
-                    <span className="text-[10px] font-semibold uppercase tracking-[0.15em] text-slate-950">
-                      Send
-                    </span>
-                  </button>
-                </div>
-              </form>
-
-              {imagePreview && (
-                <label className="mt-2 flex items-center gap-2 text-xs text-slate-200/90">
-                  <input
-                    type="checkbox"
-                    className="h-3.5 w-3.5 rounded border-slate-600/80 bg-transparent"
-                    checked={imageConsent}
-                    onChange={e => setImageConsent(e.target.checked)}
-                  />
-                  Use this image for this session only.
-                </label>
-              )}
-
-              {/* Guided quick prompts — optional, not prerequisites */}
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-200/90">
-                <span>If it&apos;s easier, tap one:</span>
-                {[
-                  'Help me figure out how urgent this might be.',
-                  'I’m not sure if this is home-care or clinic-level.',
-                  'I care about cost and wait time as much as safety.',
-                  'I’ve been dealing with this for a while — is that a problem?',
-                ].map(label => (
-                  <button
-                    key={label}
-                    type="button"
-                    onClick={() => handleSend(label)}
-                    className="rounded-full border border-slate-600/80 bg-slate-900/80 px-2.5 py-1 text-xs text-slate-100 hover:bg-slate-800/90"
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <SessionFile
-              messages={messages}
-              insights={insights}
-              top3={top3}
-              onCall={() => requestAICall(top3[0])}
-              onExportPlan={exportForTasks}
-            />
-
-            {callViz.status !== 'idle' && (
-              <LiveCallBubble
-                status={callViz.status}
-                transcript={callViz.transcript}
-                placeName={callViz.placeName}
-                onClose={() => setCallViz({ status: 'idle', transcript: [] })}
-              />
-            )}
-          </section>
-
-          {/* Right rail */}
-          {showRightRail && (
-            <aside className="self-start space-y-4 lg:sticky lg:top-8">
-              {cardsActive ? (
-                <>
-                  {/* Clinics / care sites up top */}
-                  {top3.length > 0 && (
-                    <div
-                      className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-950/95 p-5 backdrop-blur"
-                      style={{
-                        animation: `floatInRight ${CARD_DURATION_MS}ms ease-out both`,
-                        animationDelay: `0ms`,
-                      }}
+                {/* Guided starter chips — expand scope without overwhelming */}
+                <div className="mt-3 flex flex-wrap items-center gap-2 text-[11px] text-slate-200/90">
+                  <span>If it’s easier, tap one to start:</span>
+                  {starterChips.map(chip => (
+                    <button
+                      key={chip.label}
+                      type="button"
+                      onClick={() => handleChipClick(chip.text)}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-2.5 py-1 text-xs font-semibold text-slate-100 hover:bg-slate-800/90"
                     >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h3 className="font-medium text-slate-50">
-                            Stella&apos;s clinic picks
-                          </h3>
-                          <p className="mt-0.5 text-[11px] text-slate-300/90">
-                            Ranked by No Trek score (reviews, distance, affordability).
-                          </p>
-                        </div>
-                        <span className="text-xs text-slate-300/90">Top 3</span>
-                      </div>
-                      <div className="mt-3 space-y-3">
-                        {top3.map(p => (
-                          <PlaceRow
-                            key={p.id}
-                            p={p}
-                            onOpen={() => openPlace(p)}
-                            onCall={() => requestAICall(p)}
-                            onFollowUp={() => addPlaceFollowUp(p)}
-                            showWhy
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {(evidenceLock
-                    ? insights.filter(i => (i.citations || []).length > 0)
-                    : insights
-                  ).map((c, i) => (
-                    <InsightTriad
-                      key={`${c.id}-${i}`}
-                      card={c}
-                      delay={(i + 1) * CARD_STAGGER_MS}
-                      durationMs={CARD_DURATION_MS}
-                      onAICall={() => requestAICall(top3[0])}
-                      onExpand={() => setFullCard(c)}
-                      onAddFollowUps={() => addInsightFollowUps(c)}
-                    />
+                      {chip.label}
+                    </button>
                   ))}
+                </div>
 
-                  {nearest10.length > 0 && (
-                    <div
-                      className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-950/95 p-5 backdrop-blur"
-                      style={{
-                        animation: `floatInRight ${CARD_DURATION_MS}ms ease-out both`,
-                        animationDelay: `${(insights.length + 2) * CARD_STAGGER_MS}ms`,
-                      }}
+                {/* Light session tools tucked away at bottom-right */}
+                <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-300/90">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="inline-flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={evidenceLock}
+                        onChange={e => setEvidenceLock(e.target.checked)}
+                        className="h-3.5 w-3.5 bg-transparent"
+                      />
+                      Evidence lock
+                    </label>
+                    <label className="inline-flex items-center gap-1.5">
+                      <input
+                        type="checkbox"
+                        checked={hardEvidence}
+                        onChange={e => setHardEvidence(e.target.checked)}
+                        className="h-3.5 w-3.5 bg-transparent"
+                      />
+                      Warn if citations missing
+                    </label>
+                    <label
+                      className="inline-flex items-center gap-1.5"
+                      title="Show places even if reviews are missing"
                     >
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h3 className="font-medium text-slate-50">More care options</h3>
-                          <p className="mt-0.5 text-[11px] text-slate-300/90">
-                            Tap for breakdown, citations, and directions.
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => setShowAllPlaces(true)}
-                          className="text-xs text-slate-200 hover:underline"
-                        >
-                          View all ({rankedPlaces.length})
-                        </button>
-                      </div>
-                      <div className="mt-3 space-y-3">
-                        {nearest10.map(p => (
-                          <PlaceRow
-                            key={p.id}
-                            p={p}
-                            onOpen={() => openPlace(p)}
-                            onCall={() => requestAICall(p)}
-                            onFollowUp={() => addPlaceFollowUp(p)}
-                          />
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                      <input
+                        type="checkbox"
+                        checked={showUnverified}
+                        onChange={e => setShowUnverified(e.target.checked)}
+                        className="h-3.5 w-3.5 bg-transparent"
+                      />
+                      Show unverified options
+                    </label>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={() => setShowSources(true)}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-100 hover:bg-slate-800/90"
+                    >
+                      Sources ({sessionSources.length})
+                    </button>
+                    <button
+                      onClick={exportTxt}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] text-slate-100 hover:bg-slate-800/90"
+                    >
+                      Export .txt
+                    </button>
+                    <button
+                      onClick={exportForTasks}
+                      disabled={tasks.length === 0}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] font-semibold text-slate-100 disabled:cursor-not-allowed disabled:opacity-40 hover:bg-slate-800/90"
+                    >
+                      Send to Tasks
+                    </button>
+                    <button
+                      onClick={() => setShowTasks(true)}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
+                    >
+                      Follow-ups ({openTasks})
+                    </button>
+                    <button
+                      onClick={resetSession}
+                      className="rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
+                    >
+                      Reset
+                    </button>
+                    <button
+                      onClick={deleteData}
+                      className="rounded-full border border-slate-700/80 bg-slate-950/80 px-3 py-1 text-[11px] font-semibold text-slate-100 hover:bg-slate-900/90"
+                      title="Delete local session data & images"
+                    >
+                      Delete my data
+                    </button>
+                  </div>
+                </div>
+              </div>
 
-                  {places.length > 0 && rankedPlaces.length === 0 && (
-                    <div className="rounded-[22px] border-[2px] border-slate-700/80 bg-slate-900/85 p-5 backdrop-blur">
-                      <h3 className="font-medium text-slate-50">
-                        No reviewed options yet
-                      </h3>
-                      <p className="mt-1 text-sm text-slate-200/90">
-                        We hide locations without verifiable ratings or public reviews. Toggle
-                        “Show unverified options” above if you’d like to see everything the
-                        model returned.
-                      </p>
-                    </div>
-                  )}
-                </>
-              ) : (
-                <RightRailPlaceholder />
+              <SessionFile
+                messages={messages}
+                insights={insights}
+                top3={top3}
+                onCall={() => requestAICall(top3[0])}
+                onExportPlan={exportForTasks}
+              />
+
+              {callViz.status !== 'idle' && (
+                <LiveCallBubble
+                  status={callViz.status}
+                  transcript={callViz.transcript}
+                  placeName={callViz.placeName}
+                  onClose={() => setCallViz({ status: 'idle', transcript: [] })}
+                />
               )}
-            </aside>
-          )}
-        </div>
+            </section>
 
-        <p className="mt-4 text-[11px] text-slate-400">
-          No Trek is not a medical provider. This is educational support, not a diagnosis. If
-          you have life-threatening symptoms, call your local emergency number.
-        </p>
+            {/* Right rail */}
+            {showRightRail && (
+              <aside className="self-start space-y-4 lg:sticky lg:top-8">
+                {/* Stella’s plan space — always visible */}
+                <PlanPanel risk={risk} insights={insights} tasks={tasks} />
+
+                {cardsActive && (
+                  <>
+                    {/* Clinics / care sites */}
+                    {top3.length > 0 && (
+                      <div
+                        className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-950/95 p-5 backdrop-blur"
+                        style={{
+                          animation: `floatInRight ${CARD_DURATION_MS}msease-out both`,
+                          animationDelay: `0ms`,
+                        }}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h3 className="font-medium text-slate-50">
+                              Stella&apos;s clinic picks
+                            </h3>
+                            <p className="mt-0.5 text-[11px] text-slate-300/90">
+                              Ranked by No Trek score (reviews, distance, affordability).
+                            </p>
+                          </div>
+                          <span className="text-xs text-slate-300/90">Top 3</span>
+                        </div>
+                        <div className="mt-3 space-y-3">
+                          {top3.map(p => (
+                            <PlaceRow
+                              key={p.id}
+                              p={p}
+                              onOpen={() => openPlace(p)}
+                              onCall={() => requestAICall(p)}
+                              onFollowUp={() => addPlaceFollowUp(p)}
+                              showWhy
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {(evidenceLock
+                      ? insights.filter(i => (i.citations || []).length > 0)
+                      : insights
+                    ).map((c, i) => (
+                      <InsightTriad
+                        key={`${c.id}-${i}`}
+                        card={c}
+                        delay={(i + 1) * CARD_STAGGER_MS}
+                        durationMs={CARD_DURATION_MS}
+                        onAICall={() => requestAICall(top3[0])}
+                        onExpand={() => setFullCard(c)}
+                        onAddFollowUps={() => addInsightFollowUps(c)}
+                      />
+                    ))}
+
+                    {nearest10.length > 0 && (
+                      <div
+                        className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-950/95 p-5 backdrop-blur"
+                        style={{
+                          animation: `floatInRight ${CARD_DURATION_MS}ms ease-out both`,
+                          animationDelay: `${(insights.length + 2) * CARD_STAGGER_MS}ms`,
+                        }}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h3 className="font-medium text-slate-50">More care options</h3>
+                            <p className="mt-0.5 text-[11px] text-slate-300/90">
+                              Tap for breakdown, citations, and directions.
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => setShowAllPlaces(true)}
+                            className="text-xs font-semibold text-slate-200 hover:underline"
+                          >
+                            View all ({rankedPlaces.length})
+                          </button>
+                        </div>
+                        <div className="mt-3 space-y-3">
+                          {nearest10.map(p => (
+                            <PlaceRow
+                              key={p.id}
+                              p={p}
+                              onOpen={() => openPlace(p)}
+                              onCall={() => requestAICall(p)}
+                              onFollowUp={() => addPlaceFollowUp(p)}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {places.length > 0 && rankedPlaces.length === 0 && (
+                      <div className="rounded-[22px] border-[2px] border-slate-700/80 bg-slate-900/85 p-5 backdrop-blur">
+                        <h3 className="font-medium text-slate-50">
+                          No reviewed options yet
+                        </h3>
+                        <p className="mt-1 text-sm text-slate-200/90">
+                          We hide locations without verifiable ratings or public reviews.
+                          Toggle “Show unverified options” below if you’d like to see
+                          everything the model returned.
+                        </p>
+                      </div>
+                    )}
+                  </>
+                )}
+              </aside>
+            )}
+          </div>
+
+          {/* What Stella can / can’t do strip */}
+          <CapabilitiesStrip />
+
+          <p className="mt-4 text-[11px] text-slate-400">
+            No Trek and Stella do not provide medical care, diagnoses, or prescriptions. This
+            is educational support only. If you have life-threatening symptoms, call your
+            local emergency number.
+          </p>
+        </div>
       </div>
 
       {activePlace && (
@@ -2297,6 +2355,86 @@ function BreathingBackground({ risk }: { risk: Risk }) {
 
       {/* vignette */}
       <div className="absolute inset-0 bg-[radial-gradient(900px_520px_at_center,transparent,rgba(0,0,0,0.55))]" />
+    </div>
+  )
+}
+
+/* ============================== Nav & Emergency Banner ============================== */
+
+function NavBar() {
+  const navLinks = [
+    { href: '/', label: 'Home' },
+    { href: '/intake', label: 'Start with Stella' },
+    { href: '/tasks', label: 'Plan & Tasks' },
+    { href: '/explore', label: 'Explore' },
+    { href: '/info', label: 'How it works' },
+    { href: '/about', label: 'About' },
+    { href: '/privacy', label: 'Privacy' },
+  ]
+
+  return (
+    <header className="border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-sm shadow-[0_8px_30px_rgba(15,23,42,0.85)]">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 lg:px-8">
+        {/* Brand / wordmark */}
+        <Link href="/" className="flex items-center gap-2">
+          <div className="grid h-8 w-8 place-items-center rounded-full bg-sky-500/95 text-[11px] font-black tracking-tight text-slate-950 shadow-[0_0_20px_rgba(56,189,248,0.9)]">
+            NT
+          </div>
+          <span className="text-xs font-semibold tracking-[0.26em] text-slate-100">
+            NO TREK
+          </span>
+        </Link>
+
+        {/* Desktop nav + CTA */}
+        <nav className="flex items-center gap-4">
+          <div className="hidden items-center gap-4 md:flex">
+            {navLinks.map(link => (
+              <Link
+                key={link.href}
+                href={link.href}
+                className="text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-200/85 transition-colors hover:text-sky-300"
+              >
+                {link.label}
+              </Link>
+            ))}
+          </div>
+
+          <Link
+            href="/intake"
+            className="rounded-2xl bg-sky-500 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.2em] text-slate-950 shadow-[0_0_26px_rgba(56,189,248,0.9)] transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_0_40px_rgba(56,189,248,1)]"
+          >
+            Start with Stella
+          </Link>
+        </nav>
+      </div>
+
+      {/* Mobile nav row */}
+      <div className="border-t border-slate-800/80 bg-slate-950/95 px-4 py-2 md:hidden">
+        <div className="mx-auto flex max-w-6xl flex-wrap gap-3">
+          {navLinks.map(link => (
+            <Link
+              key={link.href}
+              href={link.href}
+              className="rounded-full border border-slate-700/80 bg-slate-900/80 px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-200/90"
+            >
+              {link.label}
+            </Link>
+          ))}
+        </div>
+      </div>
+    </header>
+  )
+}
+
+function EmergencyBanner() {
+  return (
+    <div className="border-b border-red-500/30 bg-slate-950/80 text-[11px] text-slate-200 backdrop-blur">
+      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-2 lg:px-8">
+        <p>If this is an emergency, call 911 or your local emergency number.</p>
+        <span className="hidden rounded-full border border-red-500/70 bg-red-500/15 px-3 py-1 text-[10px] font-semibold tracking-[0.18em] text-red-200 sm:inline">
+          NOT FOR EMERGENCIES
+        </span>
+      </div>
     </div>
   )
 }
@@ -2539,6 +2677,117 @@ function StageNode({
           </div>
         )}
       </div>
+    </div>
+  )
+}
+
+/* ============================== Plan Panel (right rail) ============================== */
+function PlanPanel({
+  risk,
+  insights,
+  tasks,
+}: {
+  risk: Risk
+  insights: InsightCard[]
+  tasks: Task[]
+}) {
+  const latest = insights.length ? insights[insights.length - 1] : undefined
+  const understanding = latest?.why?.slice(0, 3) || []
+  const nextSteps = latest?.next?.slice(0, 3) || []
+  const openTasks = tasks.filter(t => !t.done)
+  const doneCount = tasks.length - openTasks.length
+
+  let riskLine: string
+  if (risk === 'severe') {
+    riskLine =
+      'Right now this sits in a “take seriously now” range based on what you’ve shared. If anything feels suddenly worse or unsafe, ignore this plan and seek urgent or emergency care.'
+  } else if (risk === 'moderate') {
+    riskLine =
+      'So far this sounds more in a “get checked soon” range. I’ll lean toward getting you in front of a clinician when that’s sensible for you.'
+  } else {
+    riskLine =
+      'So far this leans toward a low-to-moderate risk range based on your messages. We’ll keep watching for red flags together as you share more.'
+  }
+
+  const primaryStep =
+    nextSteps[0] ||
+    (openTasks[0]?.title
+      ? openTasks[0].title
+      : 'We’ll decide the first concrete step together once we clarify a bit more.')
+
+  const hasAnyPlan = understanding.length > 0 || nextSteps.length > 0 || tasks.length > 0
+
+  return (
+    <div className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-950/95 p-5 backdrop-blur">
+      <div className="flex items-center justify-between gap-2">
+        <div>
+          <h3 className="font-medium text-slate-50">Stella’s plan space</h3>
+          <p className="mt-0.5 text-[11px] text-slate-300/90">
+            As you talk, I keep a simple, private outline of where we are.
+          </p>
+        </div>
+        <span className="text-[11px] text-slate-400">
+          {tasks.length > 0 ? `${doneCount}/${tasks.length} follow-ups done` : 'No follow-ups yet'}
+        </span>
+      </div>
+
+      {!hasAnyPlan ? (
+        <div className="mt-3 space-y-2 text-sm text-slate-200/90">
+          <p>
+            Once you start talking to me, I’ll keep track of three things here:
+          </p>
+          <ul className="list-disc pl-5">
+            <li>What we’ve understood in your words</li>
+            <li>Today’s next step or two</li>
+            <li>Things to watch or prepare for</li>
+          </ul>
+          <p className="text-[11px] text-slate-400/95">
+            This is for you. You can always ignore it, change it, or clear it.
+          </p>
+        </div>
+      ) : (
+        <div className="mt-3 space-y-3 text-sm text-slate-50">
+          <section className="rounded-xl border-[2px] border-slate-700/80 bg-slate-900/90 p-3">
+            <header className="text-xs text-slate-300/90">Understanding so far</header>
+            {understanding.length > 0 ? (
+              <ul className="mt-1.5 list-disc pl-5">
+                {understanding.map((w, i) => (
+                  <li key={i}>{w}</li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-1.5 text-sm text-slate-200/90">
+                We’re still in early listening mode — keep talking and I’ll summarize the
+                key pieces here.
+              </p>
+            )}
+          </section>
+
+          <section className="rounded-xl border-[2px] border-slate-700/80 bg-slate-900/90 p-3">
+            <header className="text-xs text-slate-300/90">Today’s next step</header>
+            <p className="mt-1.5 text-sm text-slate-50">{primaryStep}</p>
+            {openTasks.length > 0 && (
+              <ul className="mt-1.5 list-disc pl-5 text-xs text-slate-200/90">
+                {openTasks.slice(0, 3).map(t => (
+                  <li key={t.id}>{t.title}</li>
+                ))}
+                {openTasks.length > 3 && (
+                  <li>+ {openTasks.length - 3} more saved in follow-ups</li>
+                )}
+              </ul>
+            )}
+          </section>
+
+          <section className="rounded-xl border-[2px] border-slate-700/80 bg-slate-900/90 p-3">
+            <header className="text-xs text-slate-300/90">What we’re watching for</header>
+            <p className="mt-1.5 text-sm text-slate-50">{riskLine}</p>
+            <p className="mt-1 text-[11px] text-slate-400/95">
+              This is educational support, not a diagnosis. If your gut says “this feels
+              like an emergency,” trust that and seek urgent care.
+            </p>
+          </section>
+        </div>
+      )}
     </div>
   )
 }
@@ -2828,13 +3077,13 @@ function InsightTriad({
           )}
           <button
             onClick={onExpand}
-            className="text-xs text-slate-200 hover:underline"
+            className="text-xs font-semibold text-slate-200 hover:underline"
           >
             Fullscreen
           </button>
           <button
             onClick={() => setOpen(v => !v)}
-            className="text-xs text-slate-200 hover:underline"
+            className="text-xs font-semibold text-slate-200 hover:underline"
           >
             {open ? 'Collapse' : 'Expand'}
           </button>
@@ -2893,13 +3142,13 @@ function InsightTriad({
                 <div className="mt-2 flex gap-2">
                   <button
                     onClick={onAICall}
-                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-800/90"
+                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-slate-800/90"
                   >
                     Have No Trek call for you
                   </button>
                   <button
                     onClick={onAddFollowUps}
-                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-800/90"
+                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-slate-800/90"
                   >
                     Add to follow-ups
                   </button>
@@ -2954,13 +3203,13 @@ function CardFullscreen({
           <div className="flex items-center gap-2">
             <button
               onClick={onAddFollowUps}
-              className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-slate-100 hover:bg-slate-800/90"
+              className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
             >
               Add to follow-ups
             </button>
             <button
               onClick={onClose}
-              className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-slate-100 hover:bg-slate-800/90"
+              className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
             >
               Close
             </button>
@@ -3004,6 +3253,7 @@ function CardFullscreen({
   )
 }
 
+/* ============================== Right rail placeholder (unused now, kept) ============================== */
 function RightRailPlaceholder() {
   return (
     <div className="hover-card rounded-[22px] border-[2px] border-slate-700/80 bg-slate-900/85 p-5 backdrop-blur">
@@ -3069,7 +3319,7 @@ function SessionFile({
           <span className="text-[11px] text-slate-300/90">Auto-updating</span>
           <button
             onClick={onExportPlan}
-            className="rounded-full border-[1px] border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+            className="rounded-full border-[1px] border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
           >
             Send to Tasks
           </button>
@@ -3119,7 +3369,7 @@ function SessionFile({
               <div className="mt-2">
                 <button
                   onClick={onCall}
-                  className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs text-slate-100 hover:bg-slate-800/90"
+                  className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-slate-800/90"
                 >
                   Have No Trek call for you
                 </button>
@@ -3132,23 +3382,17 @@ function SessionFile({
               <div className="text-xs text-slate-300/90">Top care picks</div>
               <div className="mt-1.5 space-y-2">
                 {top3.map(p => (
-                  <div key={p.id} className="flex items-center gap-2">
-                    <div className="h-8 w-10 overflow-hidden rounded-md bg-black/20">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      {p.image ? (
-                        <img
-                          src={p.image}
-                          alt={p.name}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <div className="grid h-full w-full place-items-center text-xs text-slate-400">
-                          Clinic photo
-                        </div>
-                      )}
+                  <div key={p.id} className="flex flex-col gap-0.5">
+                    <div className="flex items-center gap-2">
+                      <span className="rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-200/90">
+                        Care option
+                      </span>
+                      {typeof p.rating === 'number' && <Stars value={p.rating} />}
                     </div>
                     <div className="min-w-0">
-                      <div className="truncate text-sm text-slate-50">{p.name}</div>
+                      <div className="truncate text-sm font-semibold text-slate-50">
+                        {p.name}
+                      </div>
                       <div className="truncate text-[11px] text-slate-400">
                         {typeof p.rating === 'number'
                           ? `${p.rating.toFixed(1)}★`
@@ -3183,33 +3427,19 @@ function PlaceRow({
 }) {
   return (
     <div className="hover-card w-full overflow-hidden rounded-2xl border-[2px] border-slate-700/80 bg-gradient-to-b from-slate-900/90 to-slate-900/60">
-      <div className="relative h-20 w-full overflow-hidden border-b border-slate-700/80 bg-slate-950/80">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        {p.image ? (
-          <img
-            src={p.image}
-            alt={p.name}
-            className="h-full w-full object-cover opacity-80"
-          />
-        ) : (
-          <div className="grid h-full w-full place-items-center text-xs text-slate-500">
-            Clinic photo
-          </div>
-        )}
-        <div className="absolute left-3 top-2 rounded-full border border-slate-500/60 bg-slate-900/80 px-2 py-0.5 text-[10px] uppercase tracking-[0.14em] text-slate-200/90">
-          Care option
-        </div>
-      </div>
       <div className="flex items-start gap-3 p-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
+            <span className="rounded-full border border-slate-600/80 bg-slate-900/90 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-200/90">
+              Care option
+            </span>
             <p className="truncate font-medium text-slate-50">{p.name}</p>
             {typeof p.rating === 'number' && <Stars value={p.rating} />}
             {p.price && (
               <span className="text-[11px] text-slate-300">{p.price}</span>
             )}
             {typeof p.score?.overall === 'number' && (
-              <span className="ml-1 rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-200/90">
+              <span className="ml-1 rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[10px] font-semibold text-slate-200/90">
                 NT score {p.score.overall.toFixed(1)}/5
               </span>
             )}
@@ -3230,19 +3460,19 @@ function PlaceRow({
         <div className="ml-auto flex flex-col items-end gap-1">
           <button
             onClick={onOpen}
-            className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+            className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
           >
             Details
           </button>
           <button
             onClick={onCall}
-            className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+            className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
           >
             Call for me
           </button>
           <button
             onClick={onFollowUp}
-            className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+            className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
           >
             + Follow-up
           </button>
@@ -3279,7 +3509,7 @@ function AllPlacesPanel({
           </div>
           <button
             onClick={onClose}
-            className="pill rounded-full px-3 py-1.5 text-slate-100 hover:bg-slate-800/90"
+            className="pill rounded-full px-3 py-1.5 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
           >
             Close
           </button>
@@ -3290,30 +3520,19 @@ function AllPlacesPanel({
               key={p.id}
               className="hover-card rounded-2xl border-[2px] border-slate-700/80 bg-slate-900/85 p-3"
             >
-              <div className="flex items-center gap-3">
-                <div className="h-14 w-20 overflow-hidden rounded-lg bg-black/20">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  {p.image ? (
-                    <img
-                      src={p.image}
-                      alt={p.name}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <div className="grid h-full w-full place-items-center text-xs text-slate-400">
-                      Photo
-                    </div>
-                  )}
-                </div>
-                <div className="min-w-0">
+              <div className="flex items-start gap-3">
+                <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-full border border-slate-600/80 bg-slate-900/90 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-200/90">
+                      Care option
+                    </span>
                     <p className="truncate font-medium text-slate-50">{p.name}</p>
                     {typeof p.rating === 'number' && <Stars value={p.rating} />}
                     {p.price && (
                       <span className="text-xs text-slate-300">{p.price}</span>
                     )}
                     {typeof p.score?.overall === 'number' && (
-                      <span className="ml-1 rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[10px] text-slate-200/90">
+                      <span className="ml-1 rounded-full border border-slate-600/80 bg-slate-900/80 px-2 py-0.5 text-[10px] font-semibold text-slate-200/90">
                         NT score {p.score.overall.toFixed(1)}/5
                       </span>
                     )}
@@ -3367,19 +3586,19 @@ function AllPlacesPanel({
                 <div className="ml-auto flex flex-col items-end gap-1">
                   <button
                     onClick={() => onOpenPlace(p)}
-                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
                   >
                     Details
                   </button>
                   <button
                     onClick={() => onCallPlace(p)}
-                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
                   >
                     Call for me
                   </button>
                   <button
                     onClick={() => onFollowUpPlace(p)}
-                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] text-slate-100 hover:bg-slate-800/90"
+                    className="inline-flex items-center justify-center rounded-full border border-slate-600/80 bg-slate-900/80 px-3 py-1.5 text-[11px] font-semibold text-slate-100 hover:bg-slate-800/90"
                   >
                     + Follow-up
                   </button>
@@ -3436,167 +3655,154 @@ function PlaceDrawer({
         )}
       >
         <div className="mx-auto max-w-4xl p-5">
-          <div className="flex items-start gap-4">
-            <div className="h-28 w-44 overflow-hidden rounded-xl bg-black/20">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              {place.image ? (
-                <img
-                  src={place.image}
-                  alt={place.name}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <div className="grid h-full w-full place-items-center text-xs text-slate-400">
-                  Photo
-                </div>
-              )}
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center justify-between">
+          <div className="flex flex-col gap-4">
+            <div className="flex items-center justify-between">
+              <div>
                 <h3 className="text-lg font-semibold text-slate-50">{place.name}</h3>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={onToggleFullscreen}
-                    className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-slate-100 hover:bg-slate-800/90"
-                  >
-                    {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
-                  </button>
-                  <button
-                    onClick={onClose}
-                    className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-slate-100 hover:bg-slate-800/90"
-                  >
-                    Close
-                  </button>
-                </div>
+                <p className="mt-0.5 text-sm text-slate-200/90">
+                  {place.address || ''}{' '}
+                  {place.distance_km ? `· ${place.distance_km.toFixed(1)} km` : ''}
+                </p>
               </div>
-              <p className="mt-0.5 text-sm text-slate-200/90">
-                {place.address || ''}{' '}
-                {place.distance_km ? `· ${place.distance_km.toFixed(1)} km` : ''}
-              </p>
+              <div className="flex items-center gap-2">
+                {typeof place.rating === 'number' && <Stars value={place.rating} />}
+                <button
+                  onClick={onToggleFullscreen}
+                  className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
+                >
+                  {fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+                </button>
+                <button
+                  onClick={onClose}
+                  className="rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-3 py-1 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
 
-              <div className="mt-2 grid gap-3">
+            <div className="grid gap-3">
+              <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
+                <header className="text-xs text-slate-300/90">
+                  About this place
+                </header>
+                <p className="mt-1 text-sm text-slate-50">
+                  {place.blurb || placeBlurb(place)}
+                </p>
+              </section>
+
+              {bullets.length > 0 && (
                 <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
                   <header className="text-xs text-slate-300/90">
-                    About this place
+                    Why we picked this
                   </header>
-                  <p className="mt-1 text-sm text-slate-50">
-                    {place.blurb || placeBlurb(place)}
-                  </p>
+                  <ul className="mt-1 list-disc pl-5 text-sm text-slate-50">
+                    {bullets.map((b, i) => (
+                      <li key={i}>{b}</li>
+                    ))}
+                  </ul>
                 </section>
+              )}
 
-                {bullets.length > 0 && (
-                  <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
-                    <header className="text-xs text-slate-300/90">
-                      Why we picked this
-                    </header>
-                    <ul className="mt-1 list-disc pl-5 text-sm text-slate-50">
-                      {bullets.map((b, i) => (
-                        <li key={i}>{b}</li>
+              {place.reviewCite?.url && (
+                <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
+                  <header className="text-xs text-slate-300/90">
+                    Recent review (citation)
+                  </header>
+                  {place.reviewCite.quote && (
+                    <p className="mt-1 text-sm text-slate-50">
+                      “{place.reviewCite.quote}”
+                    </p>
+                  )}
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-300/90">
+                    {typeof place.reviewCite.rating === 'number' && (
+                      <span title={`${place.reviewCite.rating.toFixed(1)}★`}>
+                        ★ {place.reviewCite.rating.toFixed(1)}
+                      </span>
+                    )}
+                    {place.reviewCite.author && <span>— {place.reviewCite.author}</span>}
+                    <a
+                      className="underline hover:text-slate-50"
+                      href={place.reviewCite.url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {place.reviewCite.source || domainOf(place.reviewCite.url)}
+                    </a>
+                    {place.reviewCite.date && (
+                      <span>({place.reviewCite.date})</span>
+                    )}
+                  </div>
+                </section>
+              )}
+
+              {place.score && (
+                <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
+                  <header className="text-xs text-slate-300/90">Scores</header>
+                  <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-slate-50">
+                    <ScoreBar label="Overall" value={place.score.overall} />
+                    <ScoreBar label="Bedside" value={place.score.bedside} />
+                    <ScoreBar label="Cost" value={place.score.cost} />
+                    <ScoreBar label="Wait" value={place.score.wait} />
+                    <ScoreBar label="Distance" value={place.score.distance} />
+                  </div>
+                  {place.scoreNotes && (
+                    <p className="mt-2 text-xs text-slate-300/90">
+                      {place.scoreNotes}
+                    </p>
+                  )}
+                  {place.scoreSources?.length ? (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {place.scoreSources.map((c, i) => (
+                        <CitationChip key={i} c={c} />
                       ))}
-                    </ul>
-                  </section>
-                )}
-
-                {place.reviewCite?.url && (
-                  <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
-                    <header className="text-xs text-slate-300/90">
-                      Recent review (citation)
-                    </header>
-                    {place.reviewCite.quote && (
-                      <p className="mt-1 text-sm text-slate-50">
-                        “{place.reviewCite.quote}”
-                      </p>
-                    )}
-                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-300/90">
-                      {typeof place.reviewCite.rating === 'number' && (
-                        <span title={`${place.reviewCite.rating.toFixed(1)}★`}>
-                          ★ {place.reviewCite.rating.toFixed(1)}
-                        </span>
-                      )}
-                      {place.reviewCite.author && <span>— {place.reviewCite.author}</span>}
-                      <a
-                        className="underline hover:text-slate-50"
-                        href={place.reviewCite.url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {place.reviewCite.source || domainOf(place.reviewCite.url)}
-                      </a>
-                      {place.reviewCite.date && (
-                        <span>({place.reviewCite.date})</span>
-                      )}
                     </div>
-                  </section>
-                )}
+                  ) : null}
+                </section>
+              )}
+            </div>
 
-                {place.score && (
-                  <section className="rounded-lg border-[2px] border-slate-700/80 bg-slate-900/85 p-3">
-                    <header className="text-xs text-slate-300/90">Scores</header>
-                    <div className="mt-2 grid grid-cols-2 gap-3 text-sm text-slate-50">
-                      <ScoreBar label="Overall" value={place.score.overall} />
-                      <ScoreBar label="Bedside" value={place.score.bedside} />
-                      <ScoreBar label="Cost" value={place.score.cost} />
-                      <ScoreBar label="Wait" value={place.score.wait} />
-                      <ScoreBar label="Distance" value={place.score.distance} />
-                    </div>
-                    {place.scoreNotes && (
-                      <p className="mt-2 text-xs text-slate-300/90">
-                        {place.scoreNotes}
-                      </p>
-                    )}
-                    {place.scoreSources?.length ? (
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {place.scoreSources.map((c, i) => (
-                          <CitationChip key={i} c={c} />
-                        ))}
-                      </div>
-                    ) : null}
-                  </section>
-                )}
-              </div>
-
-              <div className="mt-3 flex flex-wrap gap-2">
-                {place.phone && (
-                  <a
-                    className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 hover:bg-slate-800/90"
-                    href={`tel:${place.phone}`}
-                  >
-                    Call
-                  </a>
-                )}
-                <button
-                  onClick={onCall}
-                  className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 hover:bg-slate-800/90"
+            <div className="mt-3 flex flex-wrap gap-2">
+              {place.phone && (
+                <a
+                  className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
+                  href={`tel:${place.phone}`}
                 >
-                  Have us call
-                </button>
-                <button
-                  onClick={onFollowUp}
-                  className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 hover:bg-slate-800/90"
+                  Call
+                </a>
+              )}
+              <button
+                onClick={onCall}
+                className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
+              >
+                Have us call
+              </button>
+              <button
+                onClick={onFollowUp}
+                className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
+              >
+                + Follow-up
+              </button>
+              {place.maps && (
+                <a
+                  className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
+                  href={place.maps}
+                  target="_blank"
+                  rel="noreferrer"
                 >
-                  + Follow-up
-                </button>
-                {place.maps && (
-                  <a
-                    className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 hover:bg-slate-800/90"
-                    href={place.maps}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Directions
-                  </a>
-                )}
-                {place.url && (
-                  <a
-                    className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm text-slate-100 hover:bg-slate-800/90"
-                    href={place.url}
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Website
-                  </a>
-                )}
-              </div>
+                  Directions
+                </a>
+              )}
+              {place.url && (
+                <a
+                  className="inline-flex items-center gap-2 rounded-xl border-[2px] border-slate-600/80 bg-slate-900/80 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
+                  href={place.url}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Website
+                </a>
+              )}
             </div>
           </div>
         </div>
@@ -3662,7 +3868,7 @@ function SourcesPanel({
           </div>
           <button
             onClick={onClose}
-            className="pill rounded-full px-3 py-1.5 text-slate-100 hover:bg-slate-800/90"
+            className="pill rounded-full px-3 py-1.5 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
           >
             Close
           </button>
@@ -3735,7 +3941,7 @@ function FollowUpsPanel({
           </div>
           <button
             onClick={onClose}
-            className="pill rounded-full px-3 py-1.5 text-slate-100 hover:bg-slate-800/90"
+            className="pill rounded-full px-3 py-1.5 text-sm font-semibold text-slate-100 hover:bg-slate-800/90"
           >
             Close
           </button>
@@ -3771,7 +3977,7 @@ function FollowUpsPanel({
                       <button
                         type="button"
                         onClick={() => onOpenInsight(t.linkedInsightId!)}
-                        className="mt-1 text-[11px] text-slate-200 underline-offset-2 hover:underline"
+                        className="mt-1 text-[11px] font-semibold text-slate-200 underline-offset-2 hover:underline"
                       >
                         View insight: {insightTitleFor(t.linkedInsightId) || 'open card'}
                       </button>
@@ -3802,7 +4008,7 @@ function FollowUpsPanel({
                     />
                     <button
                       onClick={() => onDelete(t.id)}
-                      className="text-[11px] text-slate-200 hover:underline"
+                      className="text-[11px] font-semibold text-slate-200 hover:underline"
                     >
                       Delete
                     </button>
@@ -3812,6 +4018,42 @@ function FollowUpsPanel({
             ))
           )}
         </div>
+      </div>
+    </div>
+  )
+}
+
+/* ============================== Capabilities Strip ============================== */
+function CapabilitiesStrip() {
+  return (
+    <div className="mt-8 grid gap-4 md:grid-cols-2">
+      <div className="hover-card rounded-2xl border-[2px] border-slate-700/80 bg-slate-900/85 p-4 backdrop-blur">
+        <h3 className="text-sm font-semibold text-slate-50">
+          What Stella can help with
+        </h3>
+        <ul className="mt-2 space-y-1.5 text-sm text-slate-200/90">
+          <li>Understanding what’s going on in plain language.</li>
+          <li>Sorting “watch and wait” vs “get seen soon” vs “go now” — with caveats.</li>
+          <li>Turning messy problems into simple steps and follow-ups.</li>
+          <li>Preparing questions and scripts for calls or visits.</li>
+          <li>Helping with bills, coverage questions, and basic cost awareness.</li>
+        </ul>
+      </div>
+      <div className="hover-card rounded-2xl border-[2px] border-slate-700/80 bg-slate-900/85 p-4 backdrop-blur">
+        <h3 className="text-sm font-semibold text-slate-50">
+          What Stella can’t do
+        </h3>
+        <ul className="mt-2 space-y-1.5 text-sm text-slate-200/90">
+          <li>Diagnose, treat, or prescribe medications.</li>
+          <li>Replace an in-person exam or your clinicians.</li>
+          <li>Handle medical or mental health emergencies.</li>
+          <li>Guarantee outcomes, bills, or coverage decisions.</li>
+          <li>Make decisions for you — you’re always in control.</li>
+        </ul>
+        <p className="mt-2 text-[11px] text-slate-400/95">
+          Think of Stella as a calm, knowledgeable guide who walks alongside you, not a
+          doctor or emergency service.
+        </p>
       </div>
     </div>
   )
