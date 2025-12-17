@@ -7,6 +7,7 @@ import {
 } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { LogoutButton } from '@/components/LogoutButton'
 
 /* ============================== Types & Data ============================== */
 
@@ -88,6 +89,8 @@ export default function Home() {
   return (
     <main className="relative min-h-screen overflow-hidden bg-slate-950 text-slate-50">
       <AnimatedBackground />
+
+      <LogoutButton />
 
       {/* Centered blocking practice demo */}
       {showPracticeDemo && (

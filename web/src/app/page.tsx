@@ -283,6 +283,18 @@ export default function AuthLandingPage() {
                 {mode === 'signin' ? 'Sign in' : 'Create account'}
               </Button>
 
+              <button
+                type="button"
+                className="text-[11px] text-blue-300 cursor-pointer hover:text-blue-200 underline-offset-2 hover:underline"
+                onClick={() => {
+                  setError(null)
+                  setSuccess(null)
+                  router.push('/forgotPassword')
+                }}
+              >
+                Forgot Password?
+              </button>
+
               {error && (
                 <p className="text-xs text-red-400 bg-red-950/40 border border-red-700/60 rounded-2xl px-3 py-2">
                   {error}
